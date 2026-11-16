@@ -117,24 +117,27 @@ export default function Feed({
 
   
   const [idle, setIdle] = useState(false);
+  const idleRef = useRef(false);
+  idleRef.current = idle;
   const idleTimer = useRef<number | undefined>(undefined);
   const wake = useCallback(() => {
     setIdle(false);
     window.clearTimeout(idleTimer.current);
-    idleTimer.current = window.setTimeout(() => setIdle(true), 2800);
+    idleTimer.current = window.setTimeout(() => setIdle(true), 3200);
   }, []);
-  useEffect(() => {
-    if (!isDesktop) return undefined;
-    wake();
-    return () => window.clearTimeout(idleTimer.current);
-  }, [isDesktop, wake]);
-  useEffect(() => {
-    if (paused) { setIdle(false); window.clearTimeout(idleTimer.current); }
-  }, [paused]);
   const [fullscreen, setFullscreen] = useState(false);
   const [heartBurst, setHeartBurst] = useState(0);
   
   const [holdSpeed, setHoldSpeed] = useState(false);
+  useEffect(() => {
+    if (!active || paused || panel || holdSpeed || controlsLocked) {
+      setIdle(false);
+      window.clearTimeout(idleTimer.current);
+      return undefined;
+    }
+    wake();
+    return () => window.clearTimeout(idleTimer.current);
+  }, [active, paused, panel, holdSpeed, controlsLocked, index, wake]);
   const [speedLock, setSpeedLock] = useState(false);
   const [lockArmed, setLockArmed] = useState(false);
   const holdRef = useRef(false);
@@ -143,18 +146,6 @@ export default function Feed({
   const scrubTarget = useRef<number | null>(null);
   
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0, gesturing: false });
-  const [fitShown, setFitShown] = useState(true);
-  const fitTimer = useRef<number | undefined>(undefined);
-  const showFit = useCallback(() => {
-    setFitShown(true);
-    window.clearTimeout(fitTimer.current);
-    fitTimer.current = window.setTimeout(() => setFitShown(false), 2200);
-  }, []);
-  useEffect(() => {
-    if (isDesktop) return undefined;
-    showFit();
-    return () => window.clearTimeout(fitTimer.current);
-  }, [isDesktop, active, index, showFit]);
   const pinchRef = useRef<{
     dist0: number; midX0: number; midY0: number; scale0: number; x0: number; y0: number;
   } | null>(null);
@@ -815,7 +806,7 @@ export default function Feed({
 
   
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDesktop) showFit();
+    if (!isDesktop) wake();
     if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
     const el = e.currentTarget;
     const span = el.clientWidth || 1;
@@ -929,7 +920,11 @@ export default function Feed({
         clearTapTimer();
         lastTapRef.current.timer = window.setTimeout(() => {
           lastTapRef.current.timer = null;
-          /* Single tap → play / pause (mobile users expect this). */
+          /* Chrome is hidden: a tap only brings it back. */
+          if (!isDesktop && idleRef.current) {
+            wake();
+            return;
+          }
           videoRef.current?.toggle();
           setClean(false);
           wake();
@@ -1375,19 +1370,19 @@ export default function Feed({
                 </div>
               )}
 
-              {!fs && !clean && (
+              {!fs && !clean && (isDesktop || !idle) && (
                 <div className="absolute inset-0 pointer-events-none"
                   style={{ background: "linear-gradient(0deg, rgba(8,11,15,.86) 0, rgba(11,14,20,.18) 26%, transparent 48%)" }} />
               )}
 
-              {isActive && !fs && !clean && !isDesktop && fitShown && (
+              {isActive && !fs && !clean && !isDesktop && !idle && (
                 <div
                   className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-2"
                   style={{ top: "64%" }}>
                   <button
                     type="button"
                     onClick={() => {
-                      showFit();
+                      wake();
                       if (zoom.scale > 1.05) {
                         setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
                         setVideoFit("contain");
@@ -1405,7 +1400,7 @@ export default function Feed({
                 </div>
               )}
 
-              {!fs && !clean && mode === "context" && onBack ? (
+              {!fs && !clean && !idle && mode === "context" && onBack ? (
                 isDesktop ? (
                   <div className="desktop-context-header">
                     <button onClick={onBack} aria-label={episodeMode ? t("feed.exitSeries") : t("feed.back")} title={episodeMode ? t("feed.exitSeries") : t("feed.back")}><IBack size={17} /></button>
@@ -1422,8 +1417,9 @@ export default function Feed({
                 )
               ) : null}
 
-              {!fs && !clean && !isDesktop && (
+              {!fs && !clean && !idle && !isDesktop && (
                 <div className="absolute right-2.5 z-20 flex flex-col items-center gap-[18px]"
+                  onPointerDown={() => wake()}
                   style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset + 96}px)` }}>
                   <div className="relative mb-1">
                     <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white bg-s3">
@@ -1546,8 +1542,9 @@ export default function Feed({
               </div>
               )}
 
-              {!fs && !clean && !isDesktop && (
-                <div className="absolute inset-x-0 z-20" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
+              {!fs && !clean && !idle && !isDesktop && (
+                <div className="absolute inset-x-0 z-20" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}
+                  onPointerDown={() => wake()}>
                   <div className="absolute inset-x-0 bottom-0 h-[190px] pointer-events-none"
                     style={{ background: "linear-gradient(0deg, rgba(0,0,0,.82) 0%, rgba(0,0,0,.42) 45%, transparent 100%)" }} />
                   <div className="relative px-4 pb-1">
@@ -1716,7 +1713,7 @@ export default function Feed({
         </>
       )}
       </div>
-      {!isDesktop && !fs && !clean && !controlsLocked && active && (
+      {!isDesktop && !fs && !clean && !idle && !controlsLocked && active && (
         <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
           <button onClick={() => setMuted(m => !m)} aria-label={muted ? t("feed.unmute") : t("feed.mute")}
             className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">

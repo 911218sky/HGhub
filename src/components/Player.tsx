@@ -72,7 +72,7 @@ export default function Player({
         interstitialsController: undefined,
         contentSteeringController: undefined,
         enableInterstitialPlayback: false,
-        enableWorker: platform !== "ios",
+        enableWorker: platform !== "ios" && platform !== "android",
         // Keep the same macOS seek workaround as the shared player.
         preferManagedMediaSource: false,
         autoStartLoad: false,
@@ -242,9 +242,11 @@ export default function Player({
               <ILockF size={16} />
             </button>
             <button onClick={cycleRate} className="text-[11px] font-bold text-white/85 pressable tabular-nums">{rate}x</button>
-            <button onClick={toggleFull} aria-label="Fullscreen" className="pressable">
-              {full ? <ICompress size={16} /> : <IExpand size={16} />}
-            </button>
+            {platform !== "android" && platform !== "ios" && (
+              <button onClick={toggleFull} aria-label="Fullscreen" className="pressable">
+                {full ? <ICompress size={16} /> : <IExpand size={16} />}
+              </button>
+            )}
           </div>
         </div>
       )}

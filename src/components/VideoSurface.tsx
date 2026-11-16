@@ -190,7 +190,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         contentSteeringController: undefined,
         enableInterstitialPlayback: false,
         // iOS WKWebView: WebWorker across hg:// often deadlocks; load on main thread instead.
-        enableWorker: !isIos,
+        enableWorker: !(isIos || platform === "android"),
         // Prefer standard MSE on macOS; hls.js handles MMS-only fallback and seek recovery.
         preferManagedMediaSource: false,
         autoStartLoad: false,
