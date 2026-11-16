@@ -10,7 +10,7 @@ import PlaybackLock from "./PlaybackLock";
 import { ArticlePanel, CommentsPanel, EpisodesPanel } from "./Panels";
 import { setBackHandler } from "../back";
 import {
-  IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IFileText, IHeart, IHeartF,
+  IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IFileText, IHeart, IHeartF,
   IDownload, ILink, IList, ILockF, IPauseF, IPlayF, ISearch, IStar, IStarF, IVol, IVolMute,
 } from "../icons";
 
@@ -142,9 +142,19 @@ export default function Feed({
   const [scrub, setScrub] = useState<{ pct: number; target: number } | null>(null);
   const scrubTarget = useRef<number | null>(null);
   
-  const [rotatePrompt, setRotatePrompt] = useState(false);
-  const rotateDeclinedRef = useRef(false);
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0, gesturing: false });
+  const [fitShown, setFitShown] = useState(true);
+  const fitTimer = useRef<number | undefined>(undefined);
+  const showFit = useCallback(() => {
+    setFitShown(true);
+    window.clearTimeout(fitTimer.current);
+    fitTimer.current = window.setTimeout(() => setFitShown(false), 2200);
+  }, []);
+  useEffect(() => {
+    if (isDesktop) return undefined;
+    showFit();
+    return () => window.clearTimeout(fitTimer.current);
+  }, [isDesktop, active, index, showFit]);
   const pinchRef = useRef<{
     dist0: number; midX0: number; midY0: number; scale0: number; x0: number; y0: number;
   } | null>(null);
@@ -314,21 +324,10 @@ export default function Feed({
       setVpLandscape((prev) => {
         if (prev === isLand) return prev;
         if (!active) return isLand;
-        // Rotated back to portrait: leave fullscreen if needed, clear prompt.
-        if (!isLand) {
-          rotateDeclinedRef.current = false;
-          setRotatePrompt(false);
-          if (fs) {
-            setFs(false);
-            invoke("set_orientation", { landscape: false }).catch(() => {});
-            try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
-            keepPlayingThroughTransition();
-          }
-          return isLand;
-        }
-        // Rotated to landscape: never auto-switch — ask the user first.
-        if (!fs && !rotateDeclinedRef.current) {
-          setRotatePrompt(true);
+        // Physical rotate only updates chrome. Never lock orientation — that path hard-crashes Android WebView.
+        if (!isLand && fs) {
+          setFs(false);
+          keepPlayingThroughTransition();
         }
         return isLand;
       });
@@ -342,56 +341,14 @@ export default function Feed({
   }, [isDesktop, active, setFs, keepPlayingThroughTransition, fs]);
 
   
-  const enterFs = useCallback(() => {
-    keepPlayingThroughTransition();
-    setClean(false);
-    setRotatePrompt(false);
-    rotateDeclinedRef.current = false;
-    setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
-    setFs(true);
-    invoke("set_immersive", { hide: true }).catch(() => {});
-    if (isLandscapeVideo) {
-      invoke("set_orientation", { landscape: true }).catch(() => {});
-      try {
-        (screen.orientation as unknown as { lock?: (o: string) => Promise<void> })?.lock?.("landscape")?.catch(() => {});
-      } catch { /* ignore */ }
-    }
-  }, [isLandscapeVideo, setClean, setFs, keepPlayingThroughTransition]);
-
   const exitFs = useCallback(() => {
     keepPlayingThroughTransition();
     setClean(false);
-    setRotatePrompt(false);
     setFs(false);
     setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
-    invoke("set_immersive", { hide: false }).catch(() => {});
-    invoke("set_orientation", { landscape: false }).catch(() => {});
-    try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
   }, [setClean, setFs, keepPlayingThroughTransition]);
 
-  const acceptRotate = useCallback(() => {
-    rotateDeclinedRef.current = false;
-    setRotatePrompt(false);
-    enterFs();
-  }, [enterFs]);
-
-  const declineRotate = useCallback(() => {
-    rotateDeclinedRef.current = true;
-    setRotatePrompt(false);
-  }, []);
-
-  useEffect(() => {
-    if (!active) setRotatePrompt(false);
-  }, [active]);
-
-  
-  useEffect(() => {
-    if (!isDesktop && fs && isLandscapeVideo) {
-      invoke("set_orientation", { landscape: true }).catch(() => {});
-    }
-  }, [isDesktop, fs, isLandscapeVideo]);
-
-  /* Entering FS: clear parallax transforms + keep system bars in sync. */
+  /* Entering FS: clear parallax transforms. Native bar/orientation calls are intentionally not used. */
   useEffect(() => {
     if (isDesktop) return;
     if (fs) {
@@ -402,9 +359,6 @@ export default function Feed({
           inner.style.removeProperty("opacity");
         });
       }
-      invoke("set_immersive", { hide: true }).catch(() => {});
-    } else {
-      invoke("set_immersive", { hide: false }).catch(() => {});
     }
   }, [fs, isDesktop]);
 
@@ -861,6 +815,7 @@ export default function Feed({
 
   
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDesktop) showFit();
     if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
     const el = e.currentTarget;
     const span = el.clientWidth || 1;
@@ -1226,7 +1181,7 @@ export default function Feed({
               className={`feed-slide relative w-full h-full snap-start snap-always ${isActive ? "is-active" : "is-near"} ${fs && isActive ? "" : "overflow-hidden"}`}>
               {/* One VideoSurface per slide — warm→active flips props (no remount) for handoff. */}
               <div className={`feed-slide-inner ${isActive && !isDesktop && fs ? "fs-immersive" : "absolute inset-0"}`}>
-                {!!slidePlayUrl ? (
+                {!!slidePlayUrl && (isDesktop || (isActive && active)) ? (
                   <div
                     className={`absolute inset-0 overflow-hidden ${isActive ? "" : "pointer-events-none"}`}
                     style={{ touchAction: isActive && (fs || zoom.scale > 1.05) ? "none" : "pan-y" }}
@@ -1425,38 +1380,14 @@ export default function Feed({
                   style={{ background: "linear-gradient(0deg, rgba(8,11,15,.86) 0, rgba(11,14,20,.18) 26%, transparent 48%)" }} />
               )}
 
-              {isActive && !fs && !clean && !isDesktop && rotatePrompt && (
-                <div
-                  className="absolute left-1/2 -translate-x-1/2 z-30 w-[min(320px,calc(100%-32px))] rounded-2xl px-3.5 py-3 elev-3 a-rise"
-                  style={{ top: "58%", background: "rgba(12,14,18,.92)", backdropFilter: "blur(12px)" }}
-                >
-                  <div className="text-[12.5px] text-white/90 leading-snug text-center">{t("feed.rotatePrompt")}</div>
-                  <div className="mt-2.5 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={declineRotate}
-                      className="flex-1 h-9 rounded-full bg-white/10 text-white/85 text-[12px] font-semibold pressable"
-                    >
-                      {t("feed.rotateDismiss")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={acceptRotate}
-                      className="flex-1 h-9 rounded-full bg-primary text-on-primary text-[12px] font-bold pressable"
-                    >
-                      {t("feed.rotateConfirm")}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {isActive && !fs && !clean && !isDesktop && !rotatePrompt && (
+              {isActive && !fs && !clean && !isDesktop && fitShown && (
                 <div
                   className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-2"
                   style={{ top: "64%" }}>
                   <button
                     type="button"
                     onClick={() => {
+                      showFit();
                       if (zoom.scale > 1.05) {
                         setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
                         setVideoFit("contain");
@@ -1471,14 +1402,6 @@ export default function Feed({
                         ? t("feed.fill")
                         : t("feed.fit")}
                   </button>
-                  {isLandscapeVideo && (
-                    <button
-                      type="button"
-                      onClick={enterFs}
-                      className="hg-chip-strong backdrop-blur-md px-3 h-7 rounded-full text-[11.5px] font-semibold flex items-center gap-1 pressable elev-1">
-                      <IExpand size={12} />{t("feed.landscapeFs")}
-                    </button>
-                  )}
                 </div>
               )}
 

@@ -204,18 +204,9 @@ pub async fn set_immersive(app: tauri::AppHandle, hide: bool) -> Result<(), Stri
     }
     #[cfg(target_os = "android")]
     {
-        // View / Window APIs must run on the Android UI thread — off-thread JNI can hard-crash.
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.run_on_main_thread(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                request_android_immersive(hide)
-            }))
-            .unwrap_or_else(|_| Err("Android immersive panicked".into()));
-            let _ = tx.send(result);
-        })
-        .map_err(|e| e.to_string())?;
-        // Surface failure to JS (callers already .catch); never abort the process.
-        let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
+        // Do not call Window/View JNI from the WebView. Attaching or detaching the UI
+        // thread aborts the process (the flash-quit users see on landscape / series).
+        let _ = (app, hide);
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
@@ -278,6 +269,7 @@ fn request_ios_status_bar_hidden(hidden: bool) {
 }
 
 #[cfg(target_os = "android")]
+#[allow(dead_code)]
 fn request_android_immersive(hide: bool) -> Result<(), String> {
     use jni::objects::{JObject, JValue};
     use jni::sys::jint;

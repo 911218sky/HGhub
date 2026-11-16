@@ -1,5 +1,4 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { api, platform as envPlatform } from "./api";
 import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./html";
 import { detectLocale, translate, type Locale, type MessageKey } from "./i18n";
@@ -287,11 +286,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setFs = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setFsState((prev) => {
       const next = typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v;
-      if (!next) {
-        invoke("set_immersive", { hide: false }).catch(() => {});
-        invoke("set_orientation", { landscape: false }).catch(() => {});
-        try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
-      }
       return next;
     });
   }, []);
