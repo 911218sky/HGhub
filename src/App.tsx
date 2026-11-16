@@ -20,7 +20,7 @@ import { IDownload, IDownloadF, IGrid, IGridF, IHome, IHomeF, ISearch, IUser, IU
 
 const TAB_ORDER: Tab[] = ["home", "category", "downloads", "search", "profile"];
 
-function TabBar() {
+function TabBar({ hidden }: { hidden: boolean }) {
   const { tab, setTab, theme, t, stack } = useStore();
   const top = stack[stack.length - 1];
   const overVideo = top?.kind === "feed";
@@ -35,7 +35,9 @@ function TabBar() {
 
   return (
     <nav
-      className={`hg-tabbar absolute bottom-0 inset-x-0 z-30 ${lightBar ? "is-light" : ""}`}
+      className={`hg-tabbar absolute bottom-0 inset-x-0 z-30 ${lightBar ? "is-light" : ""} ${hidden ? "is-hidden" : ""}`}
+      aria-hidden={hidden}
+      inert={hidden}
       style={{ paddingBottom: "var(--sab, 0px)", background: overVideo ? "#000" : undefined }}
     >
       <div className="h-[49px] flex items-end px-1 pb-1">
@@ -73,7 +75,7 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
 }
 
 function AppBody() {
-  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, fs, clean } = useStore();
+  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, fs, clean, feedChrome } = useStore();
   const isMobile = platform === "android" || platform === "ios";
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
@@ -127,7 +129,9 @@ function AppBody() {
           </div>
         ))}
 
-        {isMobile && !fs && !clean && stack.length === 0 && <TabBar />}
+        {isMobile && stack.length === 0 && (
+          <TabBar hidden={(tab === "home" && !feedChrome) || fs || clean} />
+        )}
       </div>
     </div>
   );

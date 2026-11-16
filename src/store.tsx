@@ -129,6 +129,8 @@ type Store = {
   theater: boolean; setTheater: (v: boolean | ((p: boolean) => boolean)) => void;
   fs: boolean; setFs: (v: boolean | ((p: boolean) => boolean)) => void;
   clean: boolean; setClean: (v: boolean | ((p: boolean) => boolean)) => void;
+  /** Mobile home feed: false after idle so the tab bar can slide away. */
+  feedChrome: boolean; setFeedChrome: (visible: boolean) => void;
   muted: boolean; setMuted: (v: boolean | ((p: boolean) => boolean)) => void;
   muteOnStartup: boolean; setMuteOnStartup: (on: boolean) => void;
   volume: number; setVolume: (v: number) => void;
@@ -154,6 +156,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [theater, setTheaterState] = useState(false);
   const [fs, setFsState] = useState(false);
   const [clean, setCleanState] = useState(false);
+  const [feedChrome, setFeedChromeState] = useState(true);
   const [strictSecurity, setStrictSecurityState] = useState<boolean>(isStrictSecurity);
   const [cliRelaxed, setCliRelaxed] = useState(false);
   const [strictSecurityReady, setStrictSecurityReady] = useState(false);
@@ -294,6 +297,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setCleanState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
   }, []);
 
+  const setFeedChrome = useCallback((visible: boolean) => {
+    setFeedChromeState((prev) => (prev === visible ? prev : visible));
+  }, []);
+
   const setMuted = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setP((s) => ({ ...s, muted: typeof v === "function" ? v(s.muted) : v }));
   }, []);
@@ -320,7 +327,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     muted: p.muted, setMuted, volume: p.volume, setVolume,
     videoFit: p.videoFit, setVideoFit,
-    theater, setTheater, fs, setFs, clean, setClean,
+    theater, setTheater, fs, setFs, clean, setClean, feedChrome, setFeedChrome,
     muteOnStartup: p.muteOnStartup, setMuteOnStartup,
     searchHist: p.searchHist, addSearch, clearSearchHist,
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
@@ -328,7 +335,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }), [theme, locale, setLocale, t, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, setVideoFit, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    toasts, toast, theater, setTheater, fs, setFs, clean, setClean]);
+    toasts, toast, theater, setTheater, fs, setFs, clean, setClean, feedChrome, setFeedChrome]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

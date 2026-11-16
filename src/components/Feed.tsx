@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, cover, fmt, fmtTime, isMobile } from "../api";
 import type { Detail, Episode, Post, VideoCard } from "../types";
@@ -11,7 +11,7 @@ import { ArticlePanel, CommentsPanel, EpisodesPanel } from "./Panels";
 import { setBackHandler } from "../back";
 import {
   IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IFileText, IHeart, IHeartF,
-  IDownload, ILink, IList, ILockF, IPauseF, IPlayF, ISearch, IStar, IStarF, IVol, IVolMute,
+  IDownload, ILink, IList, ILockF, IPauseF, IPlayF, IStar, IStarF, IVol, IVolMute,
 } from "../icons";
 
 type Props = {
@@ -86,6 +86,13 @@ export default function Feed({
   
   const [playTry, setPlayTry] = useState(0);
   const [panel, setPanel] = useState<"episodes" | "comments" | "article" | "detail" | "download" | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [tapHeart, setTapHeart] = useState<{ x: number; y: number; id: number } | null>(null);
+  useEffect(() => {
+    if (!tapHeart) return undefined;
+    const id = window.setTimeout(() => setTapHeart(null), 600);
+    return () => window.clearTimeout(id);
+  }, [tapHeart]);
   const [descOpen, setDescOpen] = useState(false);
   
   const resumeRef = useRef<{ key: string; t: number } | null>(
@@ -100,6 +107,7 @@ export default function Feed({
   const setFs = store.setFs;
   const clean = store.clean;
   const setClean = store.setClean;
+  const setFeedChrome = store.setFeedChrome;
 
   
   const [vpLandscape, setVpLandscape] = useState(
@@ -122,22 +130,46 @@ export default function Feed({
   const idleTimer = useRef<number | undefined>(undefined);
   const wake = useCallback(() => {
     setIdle(false);
+    if (!isDesktop) setFeedChrome(true);
     window.clearTimeout(idleTimer.current);
-    idleTimer.current = window.setTimeout(() => setIdle(true), 3200);
-  }, []);
+    idleTimer.current = window.setTimeout(() => {
+      setIdle(true);
+      if (!isDesktop) setFeedChrome(false);
+    }, 3200);
+  }, [isDesktop, setFeedChrome]);
   const [fullscreen, setFullscreen] = useState(false);
   const [heartBurst, setHeartBurst] = useState(0);
   
   const [holdSpeed, setHoldSpeed] = useState(false);
   useEffect(() => {
+    const commenting = panel === "comments";
+    if (commenting && active && !isDesktop) {
+      setIdle(true);
+      window.clearTimeout(idleTimer.current);
+      setFeedChrome(false);
+      return undefined;
+    }
     if (!active || paused || panel || holdSpeed || controlsLocked) {
       setIdle(false);
       window.clearTimeout(idleTimer.current);
+      if (!isDesktop) setFeedChrome(true);
       return undefined;
     }
     wake();
     return () => window.clearTimeout(idleTimer.current);
-  }, [active, paused, panel, holdSpeed, controlsLocked, index, wake]);
+  }, [active, paused, panel, holdSpeed, controlsLocked, index, wake, isDesktop, setFeedChrome]);
+
+  useLayoutEffect(() => {
+    if (isDesktop) return;
+    const el = boxRef.current;
+    if (!el) return;
+    el.scrollTop = pendingIndexRef.current * (el.clientHeight || 1);
+  }, [panel === "comments", isDesktop]);
+
+  useEffect(() => () => {
+    if (!isDesktop) setFeedChrome(true);
+  }, [isDesktop, setFeedChrome]);
+
   const [speedLock, setSpeedLock] = useState(false);
   const [lockArmed, setLockArmed] = useState(false);
   const holdRef = useRef(false);
@@ -269,9 +301,18 @@ export default function Feed({
   const articleHtml = kind === "post" && !hasVideo ? (post?.content || "") : "";
 
   
-  const shareLink = () => {
-    const u = kind === "post" ? (posts[curId]?.video_url || meta.title) : `https://huangguoai.com/video/${curId}/`;
-    navigator.clipboard?.writeText(u).then(() => toast(t("feed.shareCopied"), "ok")).catch(() => {});
+  const shareTarget = () => (
+    kind === "post" ? (posts[curId]?.video_url || meta.title) : `https://huangguoai.com/video/${curId}/`
+  );
+  const shareLink = () => setShareOpen(true);
+  const copyShare = () => {
+    navigator.clipboard?.writeText(shareTarget()).then(() => toast(t("feed.shareCopied"), "ok")).catch(() => {});
+    setShareOpen(false);
+  };
+  const systemShare = () => {
+    const url = shareTarget();
+    navigator.share?.({ title: meta.title, url }).catch(() => {});
+    setShareOpen(false);
   };
 
   
@@ -824,7 +865,6 @@ export default function Feed({
 
   
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDesktop) wake();
     if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
     const el = e.currentTarget;
     const span = el.clientWidth || 1;
@@ -914,10 +954,10 @@ export default function Feed({
       if (!cancelled && e) {
         const dx = e.clientX - g.startX;
         const dy = e.clientY - g.startY;
-        /* Left swipe → clean (清屏); right swipe → restore chrome. */
+        /* Left → detail sheet. Right → back when this feed was opened from elsewhere. */
         if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.1) {
-          setClean(dx < 0);
-          wake();
+          if (dx < 0) setPanel("detail");
+          else if (onBack) onBack();
         }
       }
       return;
@@ -931,8 +971,11 @@ export default function Feed({
         /* Double-tap → like (Douyin-style); single-tap handles pause. */
         clearTapTimer();
         lastTapRef.current.time = 0;
-        onLike();
-        setClean(false);
+        const box = boxRef.current?.getBoundingClientRect();
+        onLike({
+          onlyLike: true,
+          at: e ? { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) } : undefined,
+        });
       } else {
         lastTapRef.current.time = now;
         clearTapTimer();
@@ -992,6 +1035,10 @@ export default function Feed({
     const pct = barPctAt(barEl, clientX, clientY);
     if (pct == null) return null;
     setBarPct(pct);
+    if (duration > 0) {
+      const target = Math.max(0, Math.min(duration - 0.15, pct * duration));
+      setScrub({ pct: pct * 100, target });
+    }
     return pct;
   };
   const onBarDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -1014,6 +1061,7 @@ export default function Feed({
     e.stopPropagation();
     const pct = barPctAt(e.currentTarget as HTMLElement, e.clientX, e.clientY) ?? barPct;
     setBarPct(null);
+    setScrub(null);
     if (pct != null && duration > 0) {
       const target = Math.max(0, Math.min(duration - 0.15, pct * duration));
       setErr("");
@@ -1034,19 +1082,27 @@ export default function Feed({
 
   const requireLogin = () => { if (!user) { setLoginOpen(true); return false; } return true; };
 
-  const onLike = () => {
+  const onLike = (opts?: { onlyLike?: boolean; at?: { x: number; y: number } }) => {
     if (!curId) return;
+    if (opts?.at) setTapHeart({ x: opts.at.x, y: opts.at.y, id: Date.now() });
+    const already = isLiked(curId);
+    if (opts?.onlyLike && already) {
+      setHeartBurst((n) => n + 1);
+      return;
+    }
     const on = toggleLikeLocal(curId);
     setHeartBurst((n) => n + 1);
-    toast(on ? t("feed.liked") : t("feed.unliked"), on ? "heart" : "info");
-    if (requireLogin()) { if (kind === "post") api.postLike(curId, on).catch(() => {}); else api.like(curId, curEp, on).catch(() => {}); }
+    if (!user) return;
+    if (kind === "post") api.postLike(curId, on).catch(() => {});
+    else api.like(curId, curEp, on).catch(() => {});
   };
 
   const onFav = () => {
     if (!curId) return;
     const on = toggleFavLocal(curId);
-    toast(on ? t("feed.faved") : t("feed.unfaved"), on ? "star" : "info");
-    if (requireLogin()) { if (kind === "post") api.postCollect(curId, on).catch(() => {}); else api.collect(curId, on).catch(() => {}); }
+    if (!user) return;
+    if (kind === "post") api.postCollect(curId, on).catch(() => {});
+    else api.collect(curId, on).catch(() => {});
   };
 
   const onDownload = (selection: { mode: "series" } | { mode: "episodes"; eps: number[] }) => {
@@ -1165,8 +1221,12 @@ export default function Feed({
       )}
 
       <div ref={boxRef} onScroll={onScroll}
-        className={`feed-snap absolute inset-y-0 left-0 no-bar ${fs ? "overflow-hidden" : "overflow-y-scroll snap-y snap-mandatory overscroll-y-contain"}`}
-        style={{ right: isDesktop && panel ? 372 : 0, transition: "right .3s cubic-bezier(.2,0,0,1)" }}>
+        className={`feed-snap absolute inset-y-0 left-0 no-bar ${fs || panel === "comments" ? "overflow-hidden" : "overflow-y-scroll snap-y snap-mandatory overscroll-y-contain"}`}
+        style={{
+          right: isDesktop && panel ? 372 : 0,
+          transition: "right .3s cubic-bezier(.2,0,0,1)",
+          ...(panel === "comments" && !isDesktop ? { height: "32%", bottom: "auto" } : {}),
+        }}>
         {slides.map((slide, i) => {
           const vid = slide.vid;
           const isActive = i === index;
@@ -1395,31 +1455,6 @@ export default function Feed({
                   style={{ background: "linear-gradient(0deg, rgba(8,11,15,.86) 0, rgba(11,14,20,.18) 26%, transparent 48%)" }} />
               )}
 
-              {isActive && !fs && !clean && !isDesktop && !idle && (
-                <div
-                  className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-2"
-                  style={{ top: "64%" }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      wake();
-                      if (zoom.scale > 1.05) {
-                        setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
-                        setVideoFit("contain");
-                      } else {
-                        setVideoFit((f) => (f === "contain" ? "cover" : "contain"));
-                      }
-                    }}
-                    className="hg-chip-strong backdrop-blur-md px-3 h-7 rounded-full text-[11.5px] font-semibold flex items-center gap-1.5 pressable elev-1">
-                    {zoom.scale > 1.05
-                      ? t("feed.resetZoom", { n: zoom.scale.toFixed(1) })
-                      : videoFit === "contain"
-                        ? t("feed.fill")
-                        : t("feed.fit")}
-                  </button>
-                </div>
-              )}
-
               {!fs && !clean && !idle && mode === "context" && onBack ? (
                 isDesktop ? (
                   <div className="desktop-context-header">
@@ -1441,15 +1476,17 @@ export default function Feed({
                 <div className="absolute right-2.5 z-20 flex flex-col items-center gap-[18px]"
                   onPointerDown={() => wake()}
                   style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset + 96}px)` }}>
-                  <div className="relative mb-1">
+                  <button type="button" onClick={onFollow} className="relative mb-1 pressable" aria-label={t("feed.follow")}>
                     <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white bg-s3">
                       <div className="w-full h-full flex items-center justify-center text-[13px] font-bold text-white" style={{ background: "linear-gradient(135deg,#fe2c55,#ff7a45)" }}>
                         {(meta.author || "HG").slice(0, 1).toUpperCase()}
                       </div>
                     </div>
-                    <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-primary text-white flex items-center justify-center text-[14px] font-bold leading-none">+</span>
-                  </div>
-                  <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)} aria-label={t("feed.like")}>
+                    {meta.authorId > 0 && !store.follows.includes(meta.authorId) && (
+                      <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-primary text-white flex items-center justify-center text-[14px] font-bold leading-none">+</span>
+                    )}
+                  </button>
+                  <button onClick={() => onLike()} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)} aria-label={t("feed.like")}>
                     <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
                       {isLiked(curId) ? <IHeartF size={32} className="text-neon" /> : <IHeart size={32} className="hg-ink hg-ov-shadow" />}
                     </span>
@@ -1498,7 +1535,7 @@ export default function Feed({
 
                 {kind === "video" && (
                   <>
-                    <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)}>
+                    <button onClick={() => onLike()} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)}>
                       <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
                         {isLiked(curId) ? <IHeartF size={30} className="text-neon" /> : <IHeart size={30} className="text-white tsh" />}
                       </span>
@@ -1650,8 +1687,8 @@ export default function Feed({
         </div>
       ) : (
         <>
-          <Sheet open={panel === "comments"} onClose={() => setPanel(null)}>
-            <div className="flex flex-col" style={{ height: "72vh" }}>
+          <Sheet open={panel === "comments"} onClose={() => setPanel(null)} backdrop={false} dockTop="32%">
+            <div className="flex flex-col flex-1 min-h-0">
               <CommentsPanel videoId={curId} ep={curEp} total={meta.comment} kind={kind} onClose={() => setPanel(null)} />
             </div>
           </Sheet>
@@ -1732,6 +1769,14 @@ export default function Feed({
           </Sheet>
         </>
       )}
+      <Sheet open={shareOpen} onClose={() => setShareOpen(false)}>
+        <div className="px-4 pb-4 flex flex-col gap-2">
+          <button type="button" onClick={copyShare} className="h-11 rounded-2xl bg-s3 text-on text-[14px] font-semibold pressable">{t("feed.shareCopy")}</button>
+          {typeof navigator.share === "function" && (
+            <button type="button" onClick={systemShare} className="h-11 rounded-2xl bg-primary text-on-primary text-[14px] font-semibold pressable">{t("feed.shareSystem")}</button>
+          )}
+        </div>
+      </Sheet>
       </div>
       {!isDesktop && !fs && !clean && !idle && !controlsLocked && active && (
         <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
@@ -1741,9 +1786,19 @@ export default function Feed({
           </button>
           <button onClick={lockControls} aria-label={t("feed.lockControls")} title={t("feed.lockControls")} aria-pressed={false}
             className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ILockF size={17} /></button>
-          <button onClick={() => store.setTab("search")} aria-label={t("nav.search")}
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ISearch size={18} /></button>
         </div>
+      )}
+      {!isDesktop && idle && !paused && !fs && !clean && !panel && active && (
+        <div className="absolute inset-x-0 z-20 pointer-events-none" style={{ bottom: "var(--sab, 0px)" }}>
+          <div className="h-[2px]" style={{ background: "rgba(255,255,255,.28)" }}>
+            <div className="h-full bg-white" style={{ width: `${barProgress * 100}%` }} />
+          </div>
+        </div>
+      )}
+      {tapHeart && (
+        <span className="absolute z-40 pointer-events-none a-pop" style={{ left: tapHeart.x - 44, top: tapHeart.y - 44 }}>
+          <IHeartF size={88} className="text-neon" />
+        </span>
       )}
       {controlsLocked && <PlaybackLock active={active} onUnlock={() => { setControlsLocked(false); wake(); }} />}
     </div>

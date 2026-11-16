@@ -229,6 +229,8 @@ export const zh = {
   "feed.more": "展开简介",
   "feed.less": "收起",
   "feed.shareCopied": "链接已复制",
+  "feed.shareCopy": "复制链接",
+  "feed.shareSystem": "系统分享",
   "feed.noPlayUrl": "暂无播放地址",
   "feed.playUrlFailed": "取播放地址失败",
   "feed.loadFailed": "视频暂时无法加载",

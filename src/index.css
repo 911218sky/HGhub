@@ -526,6 +526,11 @@ html.theme-light .article-body { color: rgba(20,24,30,.82); }
 .hg-tabbar {
   background: #000;
   border-top: none;
+  transition: transform .28s cubic-bezier(.2, 0, 0, 1);
+}
+.hg-tabbar.is-hidden {
+  transform: translateY(100%);
+  pointer-events: none;
 }
 .hg-tabbar.is-light {
   background: rgba(255,255,255,.97);
@@ -594,7 +599,7 @@ html.theme-light .article-body { color: rgba(20,24,30,.82); }
   .a-kenburns, .a-kenburns.is-active, .is-active .a-kenburns, .a-spin-slow, .shimmer {
     animation: none !important;
   }
-  .a-tab-ink { transition: none; }
+  .a-tab-ink, .hg-tabbar { transition: none; }
   .pressable { transition: none; }
   .feed-snap { scroll-behavior: auto; }
   .feed-slide-inner,

@@ -231,6 +231,8 @@ export const en: { [K in keyof typeof zh]: string } = {
   "feed.more": "More",
   "feed.less": "Less",
   "feed.shareCopied": "Link copied",
+  "feed.shareCopy": "Copy link",
+  "feed.shareSystem": "Share via…",
   "feed.noPlayUrl": "No playable URL",
   "feed.playUrlFailed": "Failed to fetch play URL",
   "feed.loadFailed": "Video failed to load",

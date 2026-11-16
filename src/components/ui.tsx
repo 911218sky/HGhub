@@ -19,7 +19,10 @@ export function Avatar({ hue = 250, icon, name, size = 40, ring = false, classNa
   );
 }
 
-export function Sheet({ open, onClose, children, z = "z-40" }: { open: boolean; onClose: () => void; children: React.ReactNode; z?: string }) {
+export function Sheet({ open, onClose, children, z = "z-40", backdrop = true, dockTop }: {
+  open: boolean; onClose: () => void; children: React.ReactNode; z?: string;
+  backdrop?: boolean; dockTop?: string;
+}) {
   const [render, setRender] = useState(open);
   useEffect(() => {
     if (open) setRender(true);
@@ -27,11 +30,13 @@ export function Sheet({ open, onClose, children, z = "z-40" }: { open: boolean; 
   }, [open]);
   if (!render) return null;
   return (
-    <div className={`absolute inset-0 ${z}`}>
-      <div className={`absolute inset-0 ${open ? "a-fade" : "opacity-0 transition-opacity duration-200"}`}
-        style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose} />
-      <div className={`absolute bottom-0 inset-x-0 bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"}`}
-        style={{ paddingBottom: "var(--sab, 0px)", borderTopLeftRadius: "var(--r-lg)", borderTopRightRadius: "var(--r-lg)" }}>
+    <div className={`absolute inset-x-0 bottom-0 ${z}`} style={dockTop ? { top: dockTop } : { top: 0 }}>
+      {backdrop && (
+        <div className={`absolute inset-0 ${open ? "a-fade" : "opacity-0 transition-opacity duration-200"}`}
+          style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose} />
+      )}
+      <div className={`absolute inset-x-0 bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"} ${dockTop ? "top-0 bottom-0 flex flex-col" : "bottom-0"}`}
+        style={{ paddingBottom: "var(--sab, 0px)", borderTopLeftRadius: dockTop ? 0 : "var(--r-lg)", borderTopRightRadius: dockTop ? 0 : "var(--r-lg)" }}>
         <div className="pt-3 pb-1 flex justify-center"><div className="w-8 h-1 rounded-full bg-dim/70" /></div>
         {children}
       </div>

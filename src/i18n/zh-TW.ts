@@ -231,6 +231,8 @@ export const zhTW: { [K in keyof Messages]: string } = {
   "feed.more": "展開簡介",
   "feed.less": "收起",
   "feed.shareCopied": "連結已複製",
+  "feed.shareCopy": "複製連結",
+  "feed.shareSystem": "系統分享",
   "feed.noPlayUrl": "暫無播放地址",
   "feed.playUrlFailed": "取播放地址失敗",
   "feed.loadFailed": "影片暫時無法載入",
