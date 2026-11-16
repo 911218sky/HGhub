@@ -1,0 +1,279 @@
+//! Lines (data sources): fixed lines + mirrors from the address publish page.
+//!
+//! Switching a line only changes `net::base()`; request path and data model stay the same.
+//! Mirror hosts come from <https://huangguoai.pages.dev/> via `publish.js`
+//! (`var urls` domains × `var subdomains`).
+
+use serde_json::{json, Value};
+use std::time::{Duration, Instant};
+
+/// Fixed lines baked into the client (no external page dependency).
+pub const FIXED: [(&str, &str); 2] = [
+    ("Fixed line 1", "https://huangguoai.com"),
+    ("Fixed line 2", "https://huangguoai.ai"),
+];
+
+const PUBLISH_PAGE: &str = "https://huangguoai.pages.dev/";
+/// Cap on mirror list size (subdomain × domain is a cartesian product).
+const MIRROR_MAX: usize = 60;
+/// Per-line probe timeout.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+
+pub fn fixed() -> Value {
+    json!(FIXED
+        .iter()
+        .map(|(name, url)| json!({ "name": name, "url": url }))
+        .collect::<Vec<_>>())
+}
+
+/// Fetch publish page → parse publish.js → build mirror URLs. Called when user opens Lines.
+pub async fn mirrors() -> Result<Value, String> {
+    let html = get_text(PUBLISH_PAGE).await?;
+    let js_rel = script_src(&html).unwrap_or_else(|| "publish.js".to_string());
+    let js_url = absolute(PUBLISH_PAGE, &js_rel);
+    let js = get_text(&js_url).await?;
+
+    let domains = js_array(&js, "var urls");
+    let subs = js_array(&js, "var subdomains");
+    if domains.is_empty() {
+        return Err("Publish page format changed: mirror domains not found".to_string());
+    }
+
+    let mut items: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    'outer: for domain in domains {
+        let domain = domain.trim_end_matches('/').to_string();
+        if domain.is_empty() {
+            continue;
+        }
+        let hosts: Vec<String> = if subs.is_empty() {
+            vec![domain.clone()]
+        } else {
+            subs.iter().map(|s| format!("{s}.{domain}")).collect()
+        };
+        for host in hosts {
+            if !seen.insert(host.clone()) {
+                continue;
+            }
+            items.push(json!({ "url": format!("https://{host}"), "host": host }));
+            if items.len() >= MIRROR_MAX {
+                break 'outer;
+            }
+        }
+    }
+    if items.is_empty() {
+        return Err("No usable mirror addresses on the publish page".to_string());
+    }
+
+    Ok(json!({ "source": PUBLISH_PAGE, "script": js_url, "items": items }))
+}
+
+/// Reachability probe (6 concurrent). Reports only; never auto-switches.
+pub async fn probe(urls: Vec<String>) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    for chunk in urls.chunks(6) {
+        let mut handles = Vec::new();
+        for u in chunk {
+            let u = u.clone();
+            handles.push(tokio::spawn(async move { probe_one(u).await }));
+        }
+        for h in handles {
+            if let Ok(v) = h.await {
+                out.push(v);
+            }
+        }
+    }
+    json!(out)
+}
+
+async fn probe_one(url: String) -> Value {
+    let target = format!("{}/", url.trim_end_matches('/'));
+    let started = Instant::now();
+    let res = crate::net::get(
+        &target,
+        PROBE_TIMEOUT,
+        Some("text/html,application/xhtml+xml"),
+        None,
+    )
+    .await;
+    let ms = started.elapsed().as_millis() as u64;
+    match res {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            json!({ "url": url, "ok": status < 400, "status": status, "ms": ms })
+        }
+        Err(e) => json!({ "url": url, "ok": false, "ms": ms, "error": e }),
+    }
+}
+
+async fn get_text(url: &str) -> Result<String, String> {
+    let resp = crate::net::get(url, Duration::from_secs(12), None, None).await?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.text().await.map_err(|e| crate::net::err_text(&e))
+}
+
+/// Pick the script URL from HTML (publish page has one `publish.js?<version>`).
+fn script_src(html: &str) -> Option<String> {
+    let mut rest = html;
+    while let Some(i) = rest.find("src=\"") {
+        let after = &rest[i + 5..];
+        let end = after.find('"')?;
+        let candidate = &after[..end];
+        if candidate.contains(".js") {
+            return Some(candidate.to_string());
+        }
+        rest = &after[end..];
+    }
+    None
+}
+
+fn absolute(base: &str, rel: &str) -> String {
+    if rel.starts_with("http://") || rel.starts_with("https://") {
+        return rel.to_string();
+    }
+    let origin = url::Url::parse(base)
+        .ok()
+        .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or_default()));
+    match origin {
+        Some(o) if rel.starts_with('/') => format!("{o}{rel}"),
+        Some(o) => format!("{o}/{rel}"),
+        None => rel.to_string(),
+    }
+}
+
+/// Parse `var <name> = [ ... ]` string array (strip trailing `//` comments, keep `//` inside strings).
+fn js_array(src: &str, decl: &str) -> Vec<String> {
+    let Some(at) = src.find(decl) else {
+        return Vec::new();
+    };
+    let rest = &src[at..];
+    let Some(open) = rest.find('[') else {
+        return Vec::new();
+    };
+    let Some(close) = rest[open..].find(']') else {
+        return Vec::new();
+    };
+    strip_line_comments(&rest[open + 1..open + close])
+        .split(',')
+        .map(|raw| {
+            raw.trim()
+                .trim_matches(|c: char| c == '\'' || c == '"')
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Strip `//` end-of-line comments (`//` inside quotes is part of a URL — leave it).
+fn strip_line_comments(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut quote: Option<char> = None;
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                out.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    out.push(c);
+                } else if c == '/' && chars.peek() == Some(&'/') {
+                    for n in chars.by_ref() {
+                        if n == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"
+var subdomains = [
+    'thu',  // Tsinghua
+    'pku',  // Peking University
+];
+var urls=[
+	'xxbgwypx.cc/',
+];
+var otherUrls = [
+	'https://huangguoai.pages.dev',
+];
+var foreverUrls = [
+	  'https://huangguoai.com',
+	JumpPage,
+	'https://huangguoai.ai',
+];
+"#;
+
+    #[test]
+    fn parses_publish_js_arrays() {
+        assert_eq!(js_array(SAMPLE, "var urls"), vec!["xxbgwypx.cc/"]);
+        assert_eq!(js_array(SAMPLE, "var subdomains"), vec!["thu", "pku"]);
+        assert_eq!(
+            js_array(SAMPLE, "var foreverUrls"),
+            vec![
+                "https://huangguoai.com",
+                "JumpPage",
+                "https://huangguoai.ai"
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_relative_script() {
+        assert_eq!(
+            absolute("https://huangguoai.pages.dev/", "publish.js?20261103-2"),
+            "https://huangguoai.pages.dev/publish.js?20261103-2"
+        );
+        assert_eq!(
+            absolute("https://huangguoai.pages.dev/", "/a/b.js"),
+            "https://huangguoai.pages.dev/a/b.js"
+        );
+    }
+
+    #[test]
+    fn picks_script_src() {
+        let html = r#"<link rel="stylesheet" href="publish.css?1" /><script type="text/javascript" src="publish.js?20261103-2"></script>"#;
+        assert_eq!(script_src(html).as_deref(), Some("publish.js?20261103-2"));
+    }
+
+    #[tokio::test]
+    #[ignore = "network test: fetches upstream mirror list; run manually with --ignored"]
+    async fn mirrors_live() {
+        match mirrors().await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).expect("json")),
+            Err(e) => panic!("mirrors failed: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "network test: probes upstream line connectivity; run manually with --ignored"]
+    async fn probe_live() {
+        let urls = vec![
+            "https://huangguoai.com".to_string(),
+            "https://huangguoai.ai".to_string(),
+            "https://thu.xxbgwypx.cc".to_string(),
+        ];
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&probe(urls).await).expect("json")
+        );
+    }
+}

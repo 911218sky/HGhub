@@ -1,0 +1,116 @@
+import { useEffect, useRef, useState } from "react";
+import { fmtTime } from "../api";
+import { useStore } from "../store";
+import { useSeekInput } from "../useSeekInput";
+import { ICheck, ICompress, IExpand, ILockF, INext, IPauseF, IPip, IPlayF, ITheater, IVol, IVolMute } from "../icons";
+
+type Props = {
+  paused: boolean;
+  time: number;
+  duration: number;
+  buffered?: number;
+  rate: number;
+  muted: boolean;
+  volume: number;
+  theater?: boolean;
+  fullscreen?: boolean;
+  visible?: boolean;
+  seekEnabled?: boolean;
+  seekKey?: string;
+  nextDisabled?: boolean;
+  nextTitle?: string;
+  onToggle: () => void;
+  onSeek: (t: number, source?: string) => void;
+  onSeekInteraction?: (phase: string, input: string, target: number, pointerTarget?: number) => void;
+  onRate: (r: number) => void;
+  onMute: () => void;
+  onVolume: (v: number) => void;
+  onPip: () => void;
+  onLock: () => void;
+  onTheater?: () => void;
+  onFullscreen: () => void;
+  onNext?: () => void;
+};
+
+const clock = (s: number) => fmtTime(Math.max(0, s || 0)).padStart(5, "0");
+
+export default function PlayerControls({
+  paused, time, duration, buffered = 0, rate, muted, volume, theater = false, fullscreen = false,
+  visible = true, seekEnabled = true, seekKey, nextDisabled = false, nextTitle, onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onNext,
+}: Props) {
+  const { t } = useStore();
+  const resolvedNext = nextTitle ?? t("feed.next");
+  const [speedOpen, setSpeedOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const seek = useSeekInput({ time, duration, enabled: seekEnabled, resetKey: seekKey, onInteraction: onSeekInteraction,
+    onSeek: (target, input) => onSeek(target, `desktop_${input}`) });
+  const pct = duration ? Math.min(100, (seek.time / duration) * 100) : 0;
+
+  useEffect(() => {
+    if (!speedOpen) return;
+    const outside = (e: PointerEvent) => { if (!boxRef.current?.contains(e.target as Node)) setSpeedOpen(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [speedOpen]);
+
+  return (
+    <div ref={boxRef} className={`desktop-controls ${fullscreen ? "is-fullscreen" : ""} ${visible ? "" : "is-hidden"}`}
+      onPointerDown={(e) => e.stopPropagation()}>
+      <div className={`desktop-seek ${seekEnabled ? "is-seekable" : ""}`}>
+        <div className="desktop-seek-track">
+          <span className="desktop-seek-buffer" style={{ width: `${Math.min(1, buffered) * 100}%` }} />
+          <span className="desktop-seek-played" style={{ width: `${pct}%` }} />
+        </div>
+        <input aria-label={t("player.seek")} type="range" {...seek.inputProps} />
+      </div>
+
+      <div className="desktop-control-row">
+        <button className="player-control primary-play" aria-label={paused ? t("player.play") : t("player.pause")} data-tooltip={paused ? t("player.play") : t("player.pause")} onClick={onToggle}>
+          {paused ? <IPlayF size={19} /> : <IPauseF size={18} />}
+        </button>
+        {onNext && (
+          <button className="player-control" aria-label={resolvedNext} data-tooltip={resolvedNext} disabled={nextDisabled} onClick={onNext}>
+            <INext size={18} strokeWidth={1.7} />
+          </button>
+        )}
+        <span className="player-timecode"><span>{clock(seek.time)}</span><span className="player-time-separator">/</span>{clock(duration)}</span>
+        <div className="player-control-spacer" />
+        <div className="player-speed-slot">
+          <button className={`player-control player-speed ${rate !== 1 ? "is-on" : ""}`} aria-label={t("player.speed")} aria-expanded={speedOpen}
+            data-tooltip={t("player.speed")} onClick={() => setSpeedOpen((v) => !v)}>
+            {Number.isInteger(rate) ? rate.toFixed(1) : rate}x
+          </button>
+          {speedOpen && (
+            <div className="player-speed-menu" role="menu">
+              <span className="player-menu-title">{t("player.speed")}</span>
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => (
+                <button key={v} role="menuitemradio" aria-checked={rate === v} onClick={() => { onRate(v); setSpeedOpen(false); }}>
+                  <span>{v === 1 ? t("player.normal") : `${v}x`}</span>{rate === v && <ICheck size={14} />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="player-volume">
+          <button className="player-control" aria-label={muted ? t("player.unmute") : t("player.mute")} data-tooltip={t("player.mute")} onClick={onMute}>
+            {muted || volume === 0 ? <IVolMute size={20} strokeWidth={1.6} /> : <IVol size={20} strokeWidth={1.6} />}
+          </button>
+          <div className="player-volume-slider">
+            <input aria-label={t("player.volume")} type="range" min={0} max={1} step={0.01} value={muted ? 0 : volume}
+              style={{ "--fill": `${(muted ? 0 : volume) * 100}%` } as React.CSSProperties}
+              onChange={(e) => onVolume(Number(e.target.value))} />
+          </div>
+        </div>
+        <button className="player-control" aria-label={t("player.pip")} data-tooltip={t("player.pip")} onClick={onPip}><IPip size={20} strokeWidth={1.6} /></button>
+        <button className="player-control" aria-label={t("feed.lockControls")} aria-pressed={false} data-tooltip={t("feed.lockControls")} onClick={onLock}><ILockF size={18} /></button>
+        {!fullscreen && onTheater && (
+          <button className={`player-control ${theater ? "is-on" : ""}`} aria-label={t("player.theater")} aria-pressed={theater}
+            data-tooltip={t("player.theater")} onClick={onTheater}><ITheater size={20} strokeWidth={1.6} /></button>
+        )}
+        <button className="player-control" aria-label={fullscreen ? t("feed.exitFs") : t("feed.fullscreen")} data-tooltip={fullscreen ? t("feed.exitFs") : t("feed.fullscreen")} onClick={onFullscreen}>
+          {fullscreen ? <ICompress size={19} strokeWidth={1.6} /> : <IExpand size={19} strokeWidth={1.6} />}
+        </button>
+      </div>
+    </div>
+  );
+}

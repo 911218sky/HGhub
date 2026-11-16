@@ -1,0 +1,61 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+dist-ssr/
+test-results/
+src-tauri/target/
+src-tauri/gen/
+*.local
+
+# 本地打包 / 发布产物（勿提交）
+artifacts/
+*.exe
+*.msi
+*.nsis
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.apk
+*.aab
+*.ipa
+*.app/
+*_portable/
+*_portable.zip
+*-setup.exe
+*-setup.msi
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*~
+
+# 签名与密钥（务必不要提交）
+*.keystore
+*.jks
+!scripts/android-sideload.keystore
+*.p12
+*.pem
+*.p8
+*.mobileprovision
+.env
+.env.*
+!.env.example
+
+# API 私有说明
+docs/API.md
+
+# Agent 本地交接（勿上传）
+AGENTS.md
+docs/AI_HANDOFF_PROMPT.md
+.cursor/
+agent-transcripts/
