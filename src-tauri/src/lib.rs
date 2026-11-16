@@ -94,12 +94,19 @@ pub fn run() {
                 let origin_kind = match request_origin.as_deref() { None => "missing", Some("null") => "null", Some(origin) if allowed_frontend_origin(origin) => "app", _ => "other" };
                 playback_log::record("protocol.request", serde_json::json!({"resource": resource, "route": route, "method": request.method().as_str(), "range": range, "origin_kind": origin_kind}));
             }
+            // Strict mode: require a known frontend Origin (missing Origin is denied).
             if network_policy::strict_security()
-                && request_origin
+                && !request_origin
                     .as_deref()
-                    .is_some_and(|origin| !allowed_frontend_origin(origin))
+                    .is_some_and(allowed_frontend_origin)
             {
-                playback_log::record("security.origin_denied", serde_json::json!({"origin_null": request_origin.as_deref() == Some("null")}));
+                playback_log::record(
+                    "security.origin_denied",
+                    serde_json::json!({
+                        "origin_missing": request_origin.is_none(),
+                        "origin_null": request_origin.as_deref() == Some("null"),
+                    }),
+                );
                 responder.respond(
                     tauri::http::Response::builder()
                         .status(403)

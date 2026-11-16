@@ -38,6 +38,8 @@ type Props = {
   rate?: number;
   onTime?: (t: number) => void;
   onDuration?: (d: number) => void;
+  /** End of the first continuous buffered range covering currentTime (seconds). */
+  onBuffered?: (end: number) => void;
   onSize?: (w: number, h: number) => void;
   onPlaying?: () => void;
   onPause?: () => void;
@@ -53,7 +55,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   { src, poster, autoPlay = true, active = true, warm = false, diagnosticContext = {}, muted = false, loop = false, fit = "contain",
     scale = 1, panX = 0, panY = 0, isGesturing = false,
     volume = 1, rate = 1,
-    onTime, onDuration, onSize, onPlaying, onPause, onWaiting, onEnded, onError, onClick, className = "" },
+    onTime, onDuration, onBuffered, onSize, onPlaying, onPause, onWaiting, onEnded, onError, onClick, className = "" },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -217,9 +219,13 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
       hls.loadSource(url);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
-        // Prefer highest rung; locking currentLevel disables ABR downshifts.
+        // Prefer a solid start rung without locking ABR; mobile starts mid-ladder.
         if (data.levels.length > 1) {
-          hls.currentLevel = data.levels.length - 1;
+          const last = data.levels.length - 1;
+          hls.startLevel = (isIos || platform === "android")
+            ? Math.max(0, Math.floor(last * 0.5))
+            : last;
+          hls.capLevelToPlayerSize = true;
         }
         if (activity.shouldLoad()) hls.startLoad();
         if (autoPlay) activity.play("manifest_autoplay", true);
@@ -364,6 +370,15 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         onTimeUpdate={(e) => {
           const v = e.target as HTMLVideoElement;
           onTime?.(v.currentTime);
+          if (onBuffered) {
+            const { buffered, currentTime } = v;
+            for (let i = 0; i < buffered.length; i++) {
+              if (buffered.start(i) <= currentTime && currentTime <= buffered.end(i)) {
+                onBuffered(buffered.end(i));
+                break;
+              }
+            }
+          }
           if (lastSizeRef.current.w === 0 && v.videoWidth > 0) {
             reportSizeAndDuration(v);
           }

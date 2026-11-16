@@ -13,6 +13,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const busy = useRef(false);
   const sentinel = useRef<HTMLDivElement>(null);
 
@@ -29,7 +30,10 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
       });
       setPage(next);
       setPages(res?.pagination?.pages || next);
-    } catch { /* ignore */ } finally {
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error).message || t("posts.loadFailed"));
+    } finally {
       busy.current = false;
       setLoading(false);
     }
@@ -73,10 +77,24 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
         ) : loading ? (
           <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
         ) : (
-          <Empty icon={<IFireF size={26} />} title={t("posts.empty")} sub={t("ranks.emptySub")} />
+          <Empty
+            icon={<IFireF size={26} />}
+            title={err ? t("posts.loadFailed") : t("posts.empty")}
+            sub={err && err !== t("posts.loadFailed") ? err : t("ranks.emptySub")}
+            action={err ? t("common.retry") : undefined}
+            onAction={err ? () => { void loadMore(); } : undefined}
+          />
         )}
         <div ref={sentinel} className="h-10" />
-        {loading && <div className="flex justify-center py-2"><div className="w-6 h-6 spinner" /></div>}
+        {loading && items.length > 0 && <div className="flex justify-center py-2"><div className="w-6 h-6 spinner" /></div>}
+        {!loading && err && items.length > 0 && (
+          <div className="flex items-center justify-center gap-3 py-3 text-[12px] text-mut">
+            <span className="truncate max-w-[70%]">{err}</span>
+            <button type="button" onClick={() => { void loadMore(); }} className="shrink-0 text-primary font-semibold pressable">
+              {t("common.retry")}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

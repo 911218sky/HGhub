@@ -650,8 +650,26 @@ export default function Feed({
     setPaused(false);
     setVsize({ w: 0, h: 0 });
     setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
-    const soft = window.setTimeout(() => setWaiting(false), 700);
-    return () => window.clearTimeout(soft);
+    // Soft handoff: clear waiting only once a frame exists. Do not use !paused —
+    // autoplay can leave paused=false while still buffering with no picture.
+    const soft = window.setTimeout(() => {
+      const v = videoRef.current?.el();
+      if (v && v.readyState >= 2) setWaiting(false);
+    }, 700);
+    // Hard fallback: failed autoplay / hung start must not leave a stuck spinner.
+    const hard = window.setTimeout(() => {
+      const v = videoRef.current?.el();
+      if (v && v.readyState < 2 && v.paused) {
+        setWaiting(false);
+        setPaused(true);
+      } else if (v && v.readyState >= 2) {
+        setWaiting(false);
+      }
+    }, 4000);
+    return () => {
+      window.clearTimeout(soft);
+      window.clearTimeout(hard);
+    };
   }, [playKey]);
 
   
@@ -1176,7 +1194,8 @@ export default function Feed({
               className={`feed-slide relative w-full h-full snap-start snap-always ${isActive ? "is-active" : "is-near"} ${fs && isActive ? "" : "overflow-hidden"}`}>
               {/* One VideoSurface per slide — warm→active flips props (no remount) for handoff. */}
               <div className={`feed-slide-inner ${isActive && !isDesktop && fs ? "fs-immersive" : "absolute inset-0"}`}>
-                {!!slidePlayUrl && (isDesktop || (isActive && active)) ? (
+                {/* Desktop + mobile: mount ±1 window so warm→active does not remount HLS. */}
+                {!!slidePlayUrl && (isDesktop || active) ? (
                   <div
                     className={`absolute inset-0 overflow-hidden ${isActive ? "" : "pointer-events-none"}`}
                     style={{ touchAction: isActive && (fs || zoom.scale > 1.05) ? "none" : "pan-y" }}
@@ -1208,6 +1227,7 @@ export default function Feed({
                       onClick={isActive ? () => { if (isDesktop) videoRef.current?.toggle(); } : undefined}
                       onTime={isActive ? onTimeTick : undefined}
                       onDuration={isActive ? onDurationTick : undefined}
+                      onBuffered={isActive ? setBuffered : undefined}
                       onSize={isActive ? (w, h) => setVsize({ w, h }) : undefined}
                       onPlaying={isActive ? () => { setPaused(false); setWaiting(false); setErr(""); } : undefined}
                       onPause={isActive ? () => setPaused(true) : undefined}

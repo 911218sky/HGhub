@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import Hls from "hls.js";
-import { fmtTime, platform, playlist } from "../api";
-import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
-import { usePlaybackActivity } from "../usePlaybackActivity";
+import { fmtTime, platform } from "../api";
+import { useStore } from "../store";
 import { useSeekInput } from "../useSeekInput";
 import PlaybackLock from "./PlaybackLock";
+import VideoSurface, { type VideoHandle } from "./VideoSurface";
 import { ICompress, IExpand, ILockF, IPauseF, IPlayF, IVol, IVolMute } from "../icons";
 
 type Props = {
@@ -23,132 +22,44 @@ type Props = {
   diagnosticContext?: Record<string, unknown>;
 };
 
+/** Post/detail chrome over the shared VideoSurface engine (same HLS/recover path as Feed). */
 export default function Player({
   src, poster, autoPlay, active = true, muted = false, loop = false, onEnded, onPlaying,
   onTogglePlay, onToggleMute, controls = true, className = "", diagnosticContext = {},
 }: Props) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const { t } = useStore();
+  const videoRef = useRef<VideoHandle>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
-  const recoverCountRef = useRef(0);
-  const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { view: "post_detail", ...diagnosticContext, active, resource: mediaResource(src) });
-  const activity = usePlaybackActivity(videoRef, hlsRef, { active, autoPlay: !!autoPlay, src, trace });
+  const hideChromeTimer = useRef(0);
+  const chromeOn = useRef(true);
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [full, setFull] = useState(false);
   const [rate, setRate] = useState(1);
-  const [errMsg, setErrMsg] = useState<string>("");
+  const [errMsg, setErrMsg] = useState("");
   const [controlsLocked, setControlsLocked] = useState(false);
-  const seek = useSeekInput({ time, duration, enabled: active && !controlsLocked, resetKey: src,
-    onInteraction: (phase, input, target, pointerTarget) => trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
+  const [chrome, setChrome] = useState(true);
+  const seek = useSeekInput({
+    time, duration, enabled: active && !controlsLocked, resetKey: src,
+    onInteraction: (phase, input, target, pointerTarget) =>
+      videoRef.current?.trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
     onSeek: (target, input) => {
-      const video = videoRef.current;
-      if (!video || !activity.isActive()) return;
-      requestSeek(target, `legacy_${input}`);
+      videoRef.current?.seek(target, `legacy_${input}`);
       setWaiting(true);
-      if (hlsRef.current) {
-        try { hlsRef.current.startLoad(target); } catch { /* ignore */ }
-      }
-      video.currentTime = target;
-      trace("seek.assigned", { target });
-      setTime(video.currentTime);
+      setTime(target);
     },
   });
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !src) return;
-    const url = playlist(src);
-    recoverCountRef.current = 0;
     setErrMsg("");
-    trace("source.load", { engine: Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay });
-
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        interstitialsController: undefined,
-        contentSteeringController: undefined,
-        enableInterstitialPlayback: false,
-        enableWorker: platform !== "ios" && platform !== "android",
-        // Keep the same macOS seek workaround as the shared player.
-        preferManagedMediaSource: false,
-        autoStartLoad: false,
-        lowLatencyMode: false,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        backBufferLength: 30,
-        maxBufferHole: 0.5,
-        nudgeOffset: 0.25,
-        nudgeMaxRetry: 6,
-        manifestLoadingTimeOut: 20000,
-        manifestLoadingMaxRetry: 4,
-        fragLoadingTimeOut: 25000,
-        fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 400,
-      });
-      hlsRef.current = hls;
-      observeHls(hls, trace);
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
-        // Prefer highest rung; locking currentLevel disables ABR downshifts.
-        if (data.levels.length > 1) {
-          hls.currentLevel = data.levels.length - 1;
-        }
-        if (activity.isActive()) hls.startLoad();
-        if (autoPlay) activity.play("manifest_autoplay", true);
-      });
-      hls.on(Hls.Events.FRAG_BUFFERED, () => {
-        recoverCountRef.current = 0;
-        setErrMsg("");
-      });
-      hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (!data.fatal) {
-          if (
-            data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
-            data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR
-          ) {
-            try { hls.startLoad(video.currentTime || -1); } catch { /* ignore */ }
-          }
-          return;
-        }
-        if (!activity.isActive()) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && recoverCountRef.current < 4) {
-          recoverCountRef.current += 1;
-          try { hls.startLoad(video.currentTime || -1); } catch { /* ignore */ }
-          return;
-        }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recoverCountRef.current < 4) {
-          recoverCountRef.current += 1;
-          try { hls.recoverMediaError(); video.play().catch(() => {}); } catch { /* ignore */ }
-          return;
-        }
-        const detail = `${data.type}/${data.details}/${data.response?.code ?? ""}/${String(data.reason ?? "").slice(0, 80)}`;
-        (window as unknown as { __hlsErr?: string }).__hlsErr = detail;
-        setErrMsg(detail);
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else { hls.destroy(); hlsRef.current = null; }
-      });
-    } else {
-            video.src = url;
-      if (autoPlay) activity.play("native_autoplay", true);
-    }
-
-    return () => {
-      trace("source.cleanup");
-      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-    };
+    setPlaying(false);
+    setWaiting(!!autoPlay);
+    setTime(0);
+    setDuration(0);
+    setRate(1);
   }, [src, autoPlay]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = muted;
-  }, [muted]);
 
   useEffect(() => {
     const onFs = () => setFull(!!document.fullscreenElement);
@@ -156,19 +67,33 @@ export default function Player({
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
+  const bumpChrome = () => {
+    if (!chromeOn.current) {
+      chromeOn.current = true;
+      setChrome(true);
+    }
+    window.clearTimeout(hideChromeTimer.current);
+    if (!playing || controlsLocked) return;
+    hideChromeTimer.current = window.setTimeout(() => {
+      chromeOn.current = false;
+      setChrome(false);
+    }, 3200);
+  };
+
+  useEffect(() => {
+    bumpChrome();
+    return () => window.clearTimeout(hideChromeTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, playing, controlsLocked]);
+
   const toggle = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    trace("toggle.request");
-    if (video.paused) activity.play("toggle");
-    else activity.pause("toggle");
+    bumpChrome();
+    videoRef.current?.toggle();
   };
 
   const cycleRate = () => {
-    const video = videoRef.current;
-    if (!video) return;
     const next = rate === 1 ? 1.25 : rate === 1.25 ? 1.5 : rate === 1.5 ? 2 : 1;
-    video.playbackRate = next;
+    videoRef.current?.rate(next);
     setRate(next);
   };
 
@@ -182,74 +107,88 @@ export default function Player({
   const pct = duration > 0 ? (seek.time / duration) * 100 : 0;
 
   return (
-    <div ref={wrapRef} className={`relative bg-black overflow-hidden group ${className}`}>
+    <div
+      ref={wrapRef}
+      className={`relative bg-black overflow-hidden group ${className}`}
+      onPointerDown={bumpChrome}
+      onMouseMove={bumpChrome}
+    >
       <div className="absolute inset-0" inert={controlsLocked}>
-      <video
-        ref={videoRef}
-        poster={poster}
-        playsInline
-        webkit-playsinline="true"
-        preload="auto"
-        muted={muted}
-        loop={loop}
-        className="w-full h-full object-contain bg-black"
-        onClick={toggle}
-        onPlay={() => { if (activity.isActive()) { setPlaying(true); onTogglePlay?.(true); } }}
-        onPause={() => { setPlaying(false); onTogglePlay?.(false); }}
-        onWaiting={() => setWaiting(true)}
-        onPlaying={() => { if (activity.isActive()) { setWaiting(false); setErrMsg(""); onPlaying?.(); } }}
-        onSeeked={() => setWaiting(false)}
-        onTimeUpdate={(e) => setTime((e.target as HTMLVideoElement).currentTime)}
-        onLoadedMetadata={(e) => setDuration((e.target as HTMLVideoElement).duration || 0)}
-        onEnded={() => { if (activity.isActive()) onEnded?.(); }}
-      />
+        <VideoSurface
+          ref={videoRef}
+          src={src}
+          poster={poster}
+          autoPlay={autoPlay}
+          active={active}
+          muted={muted}
+          loop={loop}
+          diagnosticContext={{ view: "post_detail", ...diagnosticContext }}
+          onTime={setTime}
+          onDuration={setDuration}
+          onClick={toggle}
+          onPlaying={() => {
+            setPlaying(true);
+            setWaiting(false);
+            setErrMsg("");
+            onTogglePlay?.(true);
+            onPlaying?.();
+          }}
+          onPause={() => {
+            setPlaying(false);
+            onTogglePlay?.(false);
+          }}
+          onWaiting={() => setWaiting(true)}
+          onEnded={() => { if (active) onEnded?.(); }}
+          onError={(m) => setErrMsg(m)}
+          className="w-full h-full"
+        />
 
-      {errMsg && (
-        <div className="absolute left-2 top-2 z-30 max-w-[80%] rounded bg-black/70 px-2 py-1 text-[10px] leading-tight text-red-300 break-all">
-          {errMsg}
-        </div>
-      )}
-
-      {waiting && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="w-9 h-9 spinner" />
-        </div>
-      )}
-
-      {!playing && !waiting && (
-        <button onClick={toggle} aria-label="Play"
-          className="absolute inset-0 flex items-center justify-center">
-          <span className="w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
-            <IPlayF size={26} className="text-white ml-0.5" />
-          </span>
-        </button>
-      )}
-
-      {controls && (
-        <div className="absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-          <input aria-label="Seek" type="range" {...seek.inputProps}
-            className="hg-range w-full" style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties} />
-          <div className="flex items-center gap-3 mt-1 text-white">
-            <button onClick={toggle} aria-label={playing ? "Pause" : "Play"} className="pressable">
-              {playing ? <IPauseF size={16} /> : <IPlayF size={16} />}
-            </button>
-            <button onClick={() => onToggleMute?.()} aria-label={muted ? "Unmute" : "Mute"} className="pressable">
-              {muted ? <IVolMute size={16} /> : <IVol size={16} />}
-            </button>
-            <span className="text-[11px] tabular-nums text-white/85">{fmtTime(seek.time)} / {fmtTime(duration)}</span>
-            <div className="flex-1" />
-            <button onClick={() => setControlsLocked(true)} aria-label="Lock playback controls" title="Lock playback controls" aria-pressed={false} className="pressable">
-              <ILockF size={16} />
-            </button>
-            <button onClick={cycleRate} className="text-[11px] font-bold text-white/85 pressable tabular-nums">{rate}x</button>
-            {platform !== "android" && platform !== "ios" && (
-              <button onClick={toggleFull} aria-label="Fullscreen" className="pressable">
-                {full ? <ICompress size={16} /> : <IExpand size={16} />}
-              </button>
-            )}
+        {errMsg && (
+          <div className="absolute left-2 top-2 z-30 max-w-[80%] rounded bg-black/70 px-2 py-1 text-[10px] leading-tight text-red-300 break-all">
+            {errMsg}
           </div>
-        </div>
-      )}
+        )}
+
+        {waiting && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-9 h-9 spinner" />
+          </div>
+        )}
+
+        {!playing && !waiting && (
+          <button onClick={toggle} aria-label={t("player.play")}
+            className="absolute inset-0 flex items-center justify-center">
+            <span className="w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
+              <IPlayF size={26} className="text-white ml-0.5" />
+            </span>
+          </button>
+        )}
+
+        {controls && (
+          <div className={`absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${chrome || !playing ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+            <input aria-label={t("player.seek")} type="range" {...seek.inputProps}
+              className="hg-range w-full" style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties} />
+            <div className="flex items-center gap-3 mt-1 text-white">
+              <button onClick={toggle} aria-label={playing ? t("player.pause") : t("player.play")} className="pressable">
+                {playing ? <IPauseF size={16} /> : <IPlayF size={16} />}
+              </button>
+              <button onClick={() => onToggleMute?.()} aria-label={muted ? t("player.unmute") : t("player.mute")} className="pressable">
+                {muted ? <IVolMute size={16} /> : <IVol size={16} />}
+              </button>
+              <span className="text-[11px] tabular-nums text-white/85">{fmtTime(seek.time)} / {fmtTime(duration)}</span>
+              <div className="flex-1" />
+              <button onClick={() => setControlsLocked(true)} aria-label={t("feed.lockControls")} title={t("feed.lockControls")} aria-pressed={false} className="pressable">
+                <ILockF size={16} />
+              </button>
+              <button onClick={cycleRate} aria-label={t("player.speed")} className="text-[11px] font-bold text-white/85 pressable tabular-nums">{rate}x</button>
+              {platform !== "android" && platform !== "ios" && (
+                <button onClick={toggleFull} aria-label={full ? t("feed.exitFs") : t("feed.fullscreen")} className="pressable">
+                  {full ? <ICompress size={16} /> : <IExpand size={16} />}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
       {controlsLocked && <PlaybackLock active={active} onUnlock={() => setControlsLocked(false)} />}
     </div>

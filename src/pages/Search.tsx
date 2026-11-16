@@ -33,6 +33,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const [err, setErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
+  const reqId = useRef(0);
   const hotTags = HOT_TAG_KEYS.map((key) => t(key));
 
   useEffect(() => {
@@ -40,12 +41,17 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   }, [active]);
 
   const run = async (keyword: string, p: number) => {
-    if (busy.current) return;
-    if (p > pages && p > 1) return;
+    // New searches always run; only serialize pagination so rapid Enter doesn't get dropped.
+    if (p > 1) {
+      if (busy.current) return;
+      if (p > pages) return;
+    }
+    const id = ++reqId.current;
     busy.current = true;
     setLoading(true);
     try {
       const res = await api.search(keyword, p, 20);
+      if (id !== reqId.current) return;
       setItems((prev) => {
         const base = p === 1 ? [] : prev;
         const seen = new Set(base.map((x) => x.id));
@@ -55,10 +61,13 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
       setPages(res?.pagination?.pages || 1);
       setErr(null);
     } catch (e) {
+      if (id !== reqId.current) return;
       setErr((e as Error).message || t("search.failed"));
     } finally {
-      busy.current = false;
-      setLoading(false);
+      if (id === reqId.current) {
+        busy.current = false;
+        setLoading(false);
+      }
     }
   };
 
@@ -68,7 +77,9 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
     setSubmitted(k);
     addSearch(k);
     setItems([]);
+    setPage(0);
     setPages(1);
+    setErr(null);
     run(k, 1);
   };
 
@@ -106,7 +117,17 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
           <ISearch size={18} className="text-mut shrink-0" />
           <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("search.placeholder")}
             className="flex-1 min-w-0 bg-transparent text-[14px] text-on placeholder-dim outline-none" />
-          {q && <button type="button" onClick={() => { setQ(""); setSubmitted(""); setItems([]); }} className="w-5 h-5 rounded-full bg-s4 flex items-center justify-center text-mut pressable"><IClose size={11} /></button>}
+          {q && <button type="button" onClick={() => {
+            reqId.current += 1;
+            busy.current = false;
+            setQ("");
+            setSubmitted("");
+            setItems([]);
+            setPage(0);
+            setPages(1);
+            setErr(null);
+            setLoading(false);
+          }} className="w-5 h-5 rounded-full bg-s4 flex items-center justify-center text-mut pressable"><IClose size={11} /></button>}
         </form>
         <button onClick={() => push({ kind: "ranks" })} aria-label={t("search.ranks")}
           className="w-11 h-11 rounded-full flex items-center justify-center bg-primary text-on-primary pressable shrink-0">
