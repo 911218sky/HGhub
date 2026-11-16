@@ -10,6 +10,10 @@ import PlaybackLock from "./PlaybackLock";
 import { ArticlePanel, CommentsPanel, EpisodesPanel } from "./Panels";
 import { setBackHandler } from "../back";
 import {
+  holdLockArmed, isDoubleTap, isHorizontalSwipeIntent, isVerticalPanIntent,
+  singleTapAction, swipeNavAction,
+} from "../lib/feedGestures";
+import {
   IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IFileText, IHeart, IHeartF,
   IDownload, ILink, IList, ILockF, IPauseF, IPlayF, IStar, IStarF, IVol, IVolMute,
 } from "../icons";
@@ -759,6 +763,9 @@ export default function Feed({
         case "s": case "S": onFav(); break;
         case "c": case "C": setPanel("comments"); break;
         case "e": case "E": enterSeries(); break;
+        case "i": case "I":
+          if (kind === "video") setPanel("detail");
+          break;
         default: break;
       }
     };
@@ -865,10 +872,12 @@ export default function Feed({
 
   
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
+    if (controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
+    /* Mouse/pen only for desktop hold+swipe; touch paths stay on mobile. */
+    if (isDesktop && e.pointerType === "touch") return;
     const el = e.currentTarget;
     const span = el.clientWidth || 1;
-    /* Do NOT capture yet — vertical pan must stay with the snap scroller. */
+    /* Do NOT capture yet — vertical pan must stay with the snap scroller (mobile). */
     const g = {
       x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
       t: Date.now(), base: timeRef.current, width: span,
@@ -898,14 +907,12 @@ export default function Feed({
       return;
     }
     const g = gesture.current;
-    if (!g || isDesktop || !e.isPrimary) return;
+    if (!g || !e.isPrimary) return;
     const dx = e.clientX - g.x;
     const dy = e.clientY - g.y;
 
-    
     if (g.mode === "hold") {
-      const upDist = g.startY - e.clientY;
-      const armed = upDist > 64;
+      const armed = holdLockArmed(g.startY, e.clientY);
       if (armed !== lockArmedRef.current) {
         lockArmedRef.current = armed;
         setLockArmed(armed);
@@ -914,14 +921,14 @@ export default function Feed({
     }
 
     if (g.mode === "idle") {
-      if (Math.abs(dx) > 16 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-        /* Horizontal → clean-mode swipe (seek stays on the progress bar). */
+      if (isHorizontalSwipeIntent(dx, dy)) {
+        /* Horizontal → detail (left) / back (right); seek stays on the progress bar. */
         clearTapTimer();
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "swipe";
         try { g.el.setPointerCapture(g.pointerId); } catch { /* ignore */ }
-      } else if (Math.abs(dy) > 10) {
-        /* Hand vertical flick to native snap — drop our gesture entirely. */
+      } else if (isVerticalPanIntent(dy)) {
+        /* Vertical: mobile hands off to snap; desktop hands off to wheel/trackpad. */
         clearTapTimer();
         if (g.timer) window.clearTimeout(g.timer);
         gesture.current = null;
@@ -952,13 +959,9 @@ export default function Feed({
     }
     if (g.mode === "swipe") {
       if (!cancelled && e) {
-        const dx = e.clientX - g.startX;
-        const dy = e.clientY - g.startY;
-        /* Left → detail sheet. Right → back when this feed was opened from elsewhere. */
-        if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.1) {
-          if (dx < 0) setPanel("detail");
-          else if (onBack) onBack();
-        }
+        const action = swipeNavAction(e.clientX - g.startX, e.clientY - g.startY);
+        if (action === "detail") setPanel("detail");
+        else if (action === "back" && onBack) onBack();
       }
       return;
     }
@@ -966,31 +969,8 @@ export default function Feed({
     if (cancelled || g.mode !== "idle") return;
     const moveDist = e ? Math.hypot(e.clientX - g.x, e.clientY - g.y) : 0;
     if (Date.now() - g.t < 280 && moveDist < 18) {
-      const now = Date.now();
-      if (now - lastTapRef.current.time < 300) {
-        /* Double-tap → like (Douyin-style); single-tap handles pause. */
-        clearTapTimer();
-        lastTapRef.current.time = 0;
-        const box = boxRef.current?.getBoundingClientRect();
-        onLike({
-          onlyLike: true,
-          at: e ? { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) } : undefined,
-        });
-      } else {
-        lastTapRef.current.time = now;
-        clearTapTimer();
-        lastTapRef.current.timer = window.setTimeout(() => {
-          lastTapRef.current.timer = null;
-          /* Chrome is hidden: a tap only brings it back. */
-          if (!isDesktop && idleRef.current) {
-            wake();
-            return;
-          }
-          videoRef.current?.toggle();
-          setClean(false);
-          wake();
-        }, 220) as unknown as number;
-      }
+      const box = boxRef.current?.getBoundingClientRect();
+      handleSurfaceTap(e ? { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) } : undefined);
     }
   };
 
@@ -1095,6 +1075,29 @@ export default function Feed({
     if (!user) return;
     if (kind === "post") api.postLike(curId, on).catch(() => {});
     else api.like(curId, curEp, on).catch(() => {});
+  };
+
+  /** Shared tap semantics (mobile + desktop): double → like; idle chrome → wake; else toggle play. */
+  const handleSurfaceTap = (at?: { x: number; y: number }) => {
+    const now = Date.now();
+    if (isDoubleTap(lastTapRef.current.time, now)) {
+      clearTapTimer();
+      lastTapRef.current.time = 0;
+      onLike({ onlyLike: true, at });
+      return;
+    }
+    lastTapRef.current.time = now;
+    clearTapTimer();
+    lastTapRef.current.timer = window.setTimeout(() => {
+      lastTapRef.current.timer = null;
+      if (singleTapAction(idleRef.current) === "wake") {
+        wake();
+        return;
+      }
+      videoRef.current?.toggle();
+      setClean(false);
+      wake();
+    }, 220) as unknown as number;
   };
 
   const onFav = () => {
@@ -1284,7 +1287,6 @@ export default function Feed({
                       panX={isActive ? zoom.x : 0}
                       panY={isActive ? zoom.y : 0}
                       isGesturing={isActive ? zoom.gesturing : false}
-                      onClick={isActive ? () => { if (isDesktop) videoRef.current?.toggle(); } : undefined}
                       onTime={isActive ? onTimeTick : undefined}
                       onDuration={isActive ? onDurationTick : undefined}
                       onBuffered={isActive ? setBuffered : undefined}
@@ -1346,19 +1348,19 @@ export default function Feed({
                     </div>
                   )}
 
-                  {!isDesktop && (!clean || holdSpeed) && (holdSpeed || speedLock || rate !== 1) && (
+                  {(!clean || holdSpeed) && (holdSpeed || speedLock || rate !== 1) && (
                     <button
                       onClick={() => {
                         if (speedLock) { setSpeedLock(false); toast(t("feed.speedUnlocked"), "info"); }
                         else if (rate !== 1 && !holdSpeed) setRate(1);
                       }}
                       className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3.5 h-8 rounded-full backdrop-blur-md text-[12px] font-bold elev-2 pressable ${speedLock ? "bg-primary text-on-primary" : "hg-chip hg-gold"}`}
-                      style={{ top: fsChromeCompact ? 14 : "calc(var(--sat, 0px) + 54px)" }}>
+                      style={{ top: isDesktop ? 18 : (fsChromeCompact ? 14 : "calc(var(--sat, 0px) + 54px)") }}>
                       <IBoltF size={13} />
                       {effRate}x {speedLock ? t("feed.speedLockedHint") : holdSpeed ? t("feed.speedHolding") : t("feed.speed")}
                     </button>
                   )}
-                  {!isDesktop && holdSpeed && (
+                  {holdSpeed && (
                     <div
                       className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-4 h-10 rounded-xl backdrop-blur-md elev-2 transition-all duration-200 ${lockArmed ? "bg-primary text-on-primary scale-110" : "hg-chip-strong hg-ink-2"}`}
                       style={{ top: "38%" }}>
@@ -1535,19 +1537,29 @@ export default function Feed({
 
                 {kind === "video" && (
                   <>
-                    <button onClick={() => onLike()} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)}>
+                    <button type="button" onClick={onFollow} className="relative mb-1 pressable" aria-label={t("feed.follow")}>
+                      <div className="w-11 h-11 rounded-full overflow-hidden border-2 border-white bg-s3">
+                        <div className="w-full h-full flex items-center justify-center text-[12px] font-bold text-white" style={{ background: "linear-gradient(135deg,#fe2c55,#ff7a45)" }}>
+                          {(meta.author || "HG").slice(0, 1).toUpperCase()}
+                        </div>
+                      </div>
+                      {meta.authorId > 0 && !store.follows.includes(meta.authorId) && (
+                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-primary text-white flex items-center justify-center text-[14px] font-bold leading-none">+</span>
+                      )}
+                    </button>
+                    <button onClick={() => onLike()} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)} aria-label={t("feed.like")}>
                       <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
                         {isLiked(curId) ? <IHeartF size={30} className="text-neon" /> : <IHeart size={30} className="text-white tsh" />}
                       </span>
                       <span className="hg-social-count">{fmt(likeCount)}</span>
                     </button>
 
-                    <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable">
+                    <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label={t("feed.comments")}>
                       <ICommentF size={27} className="text-white tsh" />
                       <span className="hg-social-count">{fmt(meta.comment)}</span>
                     </button>
 
-                    <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={isFav(curId)}>
+                    <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={isFav(curId)} aria-label={t("feed.favorite")}>
                       {isFav(curId) ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
                       <span className="hg-social-count">{fmt(meta.collect)}</span>
                     </button>
@@ -1566,7 +1578,7 @@ export default function Feed({
                   </>
                 )}
 
-                <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable">
+                <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable" aria-label={t("feed.share")}>
                   <ILink size={25} className="text-white tsh" />
                   <span className="hg-social-count">{t("feed.share")}</span>
                 </button>
@@ -1588,7 +1600,16 @@ export default function Feed({
                   )}
                 </div>
 
-                <p className="mt-1 text-[13.5px] leading-snug hg-ink-2 hg-ov-shadow clamp-2">{meta.title}</p>
+                <button type="button" onClick={mode === "home" ? enterSeries : () => setPanel("detail")}
+                  className="mt-1 text-left w-full pressable">
+                  <p className="text-[13.5px] leading-snug hg-ink-2 hg-ov-shadow clamp-2">{meta.title}</p>
+                </button>
+
+                <button type="button" onClick={mode === "home" ? enterSeries : () => setPanel("detail")}
+                  className="mt-1 flex items-center gap-0.5 text-[11px] font-medium hg-ink hg-ov-shadow pressable">
+                  {mode === "home" ? t("feed.enterSeries") : t("feed.details", { n: curEp })}
+                  <IChevR size={11} />
+                </button>
 
                 <button onClick={() => setDescOpen((v) => !v)} className="mt-1 text-left w-full pressable group">
                   <p className={`text-[11.5px] leading-relaxed hg-ink-4 ${descOpen ? "" : "clamp-1"}`}>
@@ -1673,102 +1694,107 @@ export default function Feed({
         />
       )}
 
-      {isDesktop ? (
-        <div className={`desktop-dock-panel ${panel ? "is-open" : ""}`}>
-          <div className="desktop-dock-inner">
-            {panel === "episodes" ? (
-              <EpisodesPanel videoId={curId} episodes={episodes} current={curEp} onPick={pickEp} onClose={() => setPanel(null)} />
-            ) : panel === "comments" ? (
-              <CommentsPanel videoId={curId} ep={curEp} total={meta.comment} kind={kind} onClose={() => setPanel(null)} />
-            ) : panel === "download" ? (
-              <DownloadPickPanel ep={curEp || 1} total={episodes.length || 1} onPick={onDownload} onClose={() => setPanel(null)} />
-            ) : null}
-          </div>
-        </div>
-      ) : (
-        <>
-          <Sheet open={panel === "comments"} onClose={() => setPanel(null)} backdrop={false} dockTop="32%">
-            <div className="flex flex-col flex-1 min-h-0">
-              <CommentsPanel videoId={curId} ep={curEp} total={meta.comment} kind={kind} onClose={() => setPanel(null)} />
-            </div>
-          </Sheet>
-
-          <Sheet open={panel === "article"} onClose={() => setPanel(null)}>
-            <div className="flex flex-col" style={{ height: "78vh" }}>
-              <ArticlePanel title={meta.title} html={articleHtml} cover={meta.cover} hot={post?.hot} onClose={() => setPanel(null)} />
-            </div>
-          </Sheet>
-
-          <Sheet open={panel === "download"} onClose={() => setPanel(null)}>
-            <div className="flex flex-col px-4 pt-2 pb-6" style={{ maxHeight: "78vh" }}>
-              <DownloadPickPanel ep={curEp || 1} total={episodes.length || 1} onPick={onDownload} onClose={() => setPanel(null)} />
-            </div>
-          </Sheet>
-
-          <Sheet open={panel === "detail" || panel === "episodes"} onClose={() => setPanel(null)}>
-            <div className="flex flex-col" style={{ height: "72vh" }}>
-              <div className="shrink-0 flex items-center gap-2 px-4 pb-2">
-                <div className="flex flex-1 bg-s3 rounded-(--r-ctl) p-1">
-                  {([["detail", "feed.detail"], ["episodes", "feed.episodes"]] as const).map(([k, key]) => (
-                    <button key={k} onClick={() => setPanel(k)}
-                      className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${panel === k ? "text-on-sec" : "text-mut"}`}
-                      style={panel === k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{t(key)}</button>
-                  ))}
-                </div>
-                <button onClick={() => setPanel(null)} aria-label={t("common.close")}
-                  className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-mut pressable">
-                  <IClose size={14} />
-                </button>
+      {(() => {
+        const detailEpisodesPanel = (
+          <div className="flex flex-col h-full min-h-0">
+            <div className="shrink-0 flex items-center gap-2 px-4 pb-2 pt-3">
+              <div className="flex flex-1 bg-s3 rounded-(--r-ctl) p-1">
+                {([["detail", "feed.detail"], ["episodes", "feed.episodes"]] as const).map(([k, key]) => (
+                  <button key={k} onClick={() => setPanel(k)}
+                    className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${panel === k ? "text-on-sec" : "text-mut"}`}
+                    style={panel === k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{t(key)}</button>
+                ))}
               </div>
-
-              <div className="flex-1 min-h-0">
-                {panel === "episodes" ? (
-                  <EpisodesPanel bare videoId={curId} episodes={episodes} current={curEp} onPick={pickEp} onClose={() => setPanel(null)} />
-                ) : (
-                  <div className="h-full scroll-y px-4 pb-5">
-                    <div className="flex gap-3">
-                      <div className="relative w-[84px] shrink-0 rounded-(--r-sm) overflow-hidden bg-s3" style={{ aspectRatio: "3 / 4" }}>
-                        <Img src={meta.cover} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13.5px] font-bold text-on leading-snug clamp-2">{meta.title}</div>
-                        <div className="flex items-center gap-2 mt-1.5">
-                          {!!meta.score && <span className="text-[12px] font-bold text-amber">{meta.score.toFixed(1)}</span>}
-                          {episodes.length > 0 && <span className="text-[10.5px] text-mut">{t("feed.episodesCount", { n: episodes.length })}</span>}
-                        </div>
-                        <div className="flex gap-3 mt-2 text-[10.5px] text-mut">
-                          <span>{t("profile.likes")} {fmt(meta.like)}</span>
-                          <span>{t("feed.saves")} {fmt(meta.collect)}</span>
-                          <span>{t("feed.comments")} {fmt(meta.comment)}</span>
-                        </div>
-                      </div>
+              <button onClick={() => setPanel(null)} aria-label={t("common.close")}
+                className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-mut pressable">
+                <IClose size={14} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0">
+              {panel === "episodes" ? (
+                <EpisodesPanel bare videoId={curId} episodes={episodes} current={curEp} onPick={pickEp} onClose={() => setPanel(null)} />
+              ) : (
+                <div className="h-full scroll-y px-4 pb-5">
+                  <div className="flex gap-3">
+                    <div className="relative w-[84px] shrink-0 rounded-(--r-sm) overflow-hidden bg-s3" style={{ aspectRatio: "3 / 4" }}>
+                      <Img src={meta.cover} />
                     </div>
-
-                    <div className="mt-4 flex items-center gap-2.5 rounded-(--r-md) bg-s2 p-2.5">
-                      <Avatar size={34} name={meta.author} hue={220} />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[12.5px] font-semibold text-on truncate">{meta.author}</div>
-                        <div className="text-[10px] text-mut">{t("feed.author")}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13.5px] font-bold text-on leading-snug clamp-2">{meta.title}</div>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        {!!meta.score && <span className="text-[12px] font-bold text-amber">{meta.score.toFixed(1)}</span>}
+                        {episodes.length > 0 && <span className="text-[10.5px] text-mut">{t("feed.episodesCount", { n: episodes.length })}</span>}
                       </div>
-                      {meta.authorId > 0 && (
-                        <button onClick={onFollow}
-                          className={`h-7 px-3 rounded-full text-[11px] font-semibold pressable ${store.follows.includes(meta.authorId) ? "bg-s3 text-mut" : "bg-primary text-on-primary"}`}>
-                          {store.follows.includes(meta.authorId) ? t("feed.followingBtn") : t("feed.follow")}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="mt-4">
-                      <div className="text-[11px] font-semibold text-dim mb-1.5">{t("feed.about")}</div>
-                      <p className="text-[11.5px] leading-relaxed text-mut whitespace-pre-wrap">{meta.desc || t("feed.noDesc")}</p>
+                      <div className="flex gap-3 mt-2 text-[10.5px] text-mut">
+                        <span>{t("profile.likes")} {fmt(meta.like)}</span>
+                        <span>{t("feed.saves")} {fmt(meta.collect)}</span>
+                        <span>{t("feed.comments")} {fmt(meta.comment)}</span>
+                      </div>
                     </div>
                   </div>
-                )}
-              </div>
+                  <div className="mt-4 flex items-center gap-2.5 rounded-(--r-md) bg-s2 p-2.5">
+                    <Avatar size={34} name={meta.author} hue={220} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12.5px] font-semibold text-on truncate">{meta.author}</div>
+                      <div className="text-[10px] text-mut">{t("feed.author")}</div>
+                    </div>
+                    {meta.authorId > 0 && (
+                      <button onClick={onFollow}
+                        className={`h-7 px-3 rounded-full text-[11px] font-semibold pressable ${store.follows.includes(meta.authorId) ? "bg-s3 text-mut" : "bg-primary text-on-primary"}`}>
+                        {store.follows.includes(meta.authorId) ? t("feed.followingBtn") : t("feed.follow")}
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-4">
+                    <div className="text-[11px] font-semibold text-dim mb-1.5">{t("feed.about")}</div>
+                    <p className="text-[11.5px] leading-relaxed text-mut whitespace-pre-wrap">{meta.desc || t("feed.noDesc")}</p>
+                  </div>
+                </div>
+              )}
             </div>
-          </Sheet>
-        </>
-      )}
+          </div>
+        );
+
+        return isDesktop ? (
+          <div className={`desktop-dock-panel ${panel ? "is-open" : ""}`}>
+            <div className="desktop-dock-inner">
+              {panel === "detail" || panel === "episodes" ? (
+                detailEpisodesPanel
+              ) : panel === "comments" ? (
+                <CommentsPanel videoId={curId} ep={curEp} total={meta.comment} kind={kind} onClose={() => setPanel(null)} />
+              ) : panel === "download" ? (
+                <DownloadPickPanel ep={curEp || 1} total={episodes.length || 1} onPick={onDownload} onClose={() => setPanel(null)} />
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <>
+            <Sheet open={panel === "comments"} onClose={() => setPanel(null)} backdrop={false} dockTop="32%">
+              <div className="flex flex-col flex-1 min-h-0">
+                <CommentsPanel videoId={curId} ep={curEp} total={meta.comment} kind={kind} onClose={() => setPanel(null)} />
+              </div>
+            </Sheet>
+
+            <Sheet open={panel === "article"} onClose={() => setPanel(null)}>
+              <div className="flex flex-col" style={{ height: "78vh" }}>
+                <ArticlePanel title={meta.title} html={articleHtml} cover={meta.cover} hot={post?.hot} onClose={() => setPanel(null)} />
+              </div>
+            </Sheet>
+
+            <Sheet open={panel === "download"} onClose={() => setPanel(null)}>
+              <div className="flex flex-col px-4 pt-2 pb-6" style={{ maxHeight: "78vh" }}>
+                <DownloadPickPanel ep={curEp || 1} total={episodes.length || 1} onPick={onDownload} onClose={() => setPanel(null)} />
+              </div>
+            </Sheet>
+
+            <Sheet open={panel === "detail" || panel === "episodes"} onClose={() => setPanel(null)}>
+              <div className="flex flex-col" style={{ height: "72vh" }}>
+                {detailEpisodesPanel}
+              </div>
+            </Sheet>
+          </>
+        );
+      })()}
       <Sheet open={shareOpen} onClose={() => setShareOpen(false)}>
         <div className="px-4 pb-4 flex flex-col gap-2">
           <button type="button" onClick={copyShare} className="h-11 rounded-2xl bg-s3 text-on text-[14px] font-semibold pressable">{t("feed.shareCopy")}</button>
@@ -1779,11 +1805,27 @@ export default function Feed({
       </Sheet>
       </div>
       {!isDesktop && !fs && !clean && !idle && !controlsLocked && active && (
-        <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
+        <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}
+          onPointerDown={() => wake()}>
           <button onClick={() => setMuted(m => !m)} aria-label={muted ? t("feed.unmute") : t("feed.mute")}
             className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">
             {muted ? <IVolMute size={17} /> : <IVol size={17} />}
           </button>
+          <label className="hg-chip h-9 px-2 rounded-full flex items-center elev-1" style={{ touchAction: "none" }}>
+            <input
+              aria-label={t("player.volume")}
+              type="range" min={0} max={1} step={0.01}
+              value={muted ? 0 : volume}
+              className="hg-range"
+              style={{ width: 72, ...( { ["--fill"]: `${(muted ? 0 : volume) * 100}%` } as object) }}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setVolume(v);
+                if (v > 0 && muted) setMuted(false);
+                if (v === 0 && !muted) setMuted(true);
+              }}
+            />
+          </label>
           <button onClick={lockControls} aria-label={t("feed.lockControls")} title={t("feed.lockControls")} aria-pressed={false}
             className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ILockF size={17} /></button>
         </div>

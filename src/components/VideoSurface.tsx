@@ -46,7 +46,7 @@ type Props = {
   onWaiting?: () => void;
   onEnded?: () => void;
   onError?: (msg: string) => void;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLVideoElement>) => void;
   className?: string;
 };
 
