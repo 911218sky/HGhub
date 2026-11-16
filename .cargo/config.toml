@@ -1,0 +1,13 @@
+# Android 15+ 16 KB page size. NDK r28 does this for C/C++; Rust needs the flags explicitly.
+# https://developer.android.com/guide/practices/page-sizes
+[target.aarch64-linux-android]
+rustflags = [
+  "-C", "link-arg=-Wl,-z,max-page-size=16384",
+  "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.x86_64-linux-android]
+rustflags = [
+  "-C", "link-arg=-Wl,-z,max-page-size=16384",
+  "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]

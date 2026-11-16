@@ -268,64 +268,6 @@ fn request_ios_status_bar_hidden(hidden: bool) {
     }
 }
 
-#[cfg(target_os = "android")]
-#[allow(dead_code)]
-fn request_android_immersive(hide: bool) -> Result<(), String> {
-    use jni::objects::{JObject, JValue};
-    use jni::sys::jint;
-    use jni::JavaVM;
-
-    let ctx = ndk_context::android_context();
-    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
-    let activity = unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) };
-
-    let window = env
-        .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])
-        .map_err(|e| e.to_string())?
-        .l()
-        .map_err(|e| e.to_string())?;
-    let decor = env
-        .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
-        .map_err(|e| e.to_string())?
-        .l()
-        .map_err(|e| e.to_string())?;
-
-    // Legacy system UI flags — reliable from minSdk 24 without androidx imports.
-    // FULLSCREEN | HIDE_NAVIGATION | LAYOUT_STABLE | LAYOUT_HIDE_NAVIGATION |
-    // LAYOUT_FULLSCREEN | IMMERSIVE_STICKY
-    const IMMERSIVE: jint = 4 | 2 | 256 | 512 | 1024 | 4096;
-    let flags: jint = if hide { IMMERSIVE } else { 0 };
-    env.call_method(
-        &decor,
-        "setSystemUiVisibility",
-        "(I)V",
-        &[JValue::Int(flags)],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // Keep cutout / edge drawing when hiding.
-    if hide {
-        let _ = env.call_method(
-            &window,
-            "addFlags",
-            "(I)V",
-            &[JValue::Int(1024 /* FLAG_FULLSCREEN */)],
-        );
-    } else {
-        let _ = env.call_method(
-            &window,
-            "clearFlags",
-            "(I)V",
-            &[JValue::Int(1024 /* FLAG_FULLSCREEN */)],
-        );
-    }
-
-    // Prevent JNI from deleting the local activity ref we didn't create.
-    std::mem::forget(activity);
-    Ok(())
-}
-
 #[cfg(target_os = "ios")]
 fn request_ios_orientation(landscape: bool) {
     use std::ffi::{c_char, c_void};
